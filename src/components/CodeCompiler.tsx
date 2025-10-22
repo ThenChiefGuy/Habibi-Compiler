@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Play, Trash2, Code2, Terminal, FileCode, Zap, Monitor } from 'lucide-react';
-import { loadPyodide, PyodideInterface } from 'pyodide';
 
 const CodeCompiler = () => {
   const [language, setLanguage] = useState('python');
@@ -11,7 +10,7 @@ const CodeCompiler = () => {
   const [inputPrompt, setInputPrompt] = useState('');
   const [userInput, setUserInput] = useState('');
   const [inputResolve, setInputResolve] = useState<((val: string) => void) | null>(null);
-  const [pyodide, setPyodide] = useState<PyodideInterface | null>(null);
+  const [pyodide, setPyodide] = useState<any>(null);
 
   const outputRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -23,10 +22,8 @@ name = input("What is your name: ")
 age = int(input("How old are you: "))
 for i in range(3):
     print(f"Hello {name}, you are {age} years old. Loop {i+1}")`,
-
     java: `// Java Example
 // Coming soon!`,
-
     html: `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -43,12 +40,28 @@ for i in range(3):
 </html>`
   };
 
-  // Load Pyodide once
+  // ----------------- Load Pyodide Dynamically -----------------
   useEffect(() => {
-    loadPyodide().then(py => setPyodide(py));
+    const loadPy = async () => {
+      addOutput('Loading Python runtime...', 'info');
+      const py = await (window as any).loadPyodide({
+        indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.23.4/full/'
+      });
+      setPyodide(py);
+      addOutput('Python runtime loaded ✅', 'info');
+    };
+
+    if (!(window as any).loadPyodide) {
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/pyodide/v0.23.4/full/pyodide.js';
+      script.onload = loadPy;
+      document.body.appendChild(script);
+    } else {
+      loadPy();
+    }
   }, []);
 
-  // Load example code
+  // ----------------- Load Example Code -----------------
   useEffect(() => {
     if (!code || Object.values(examples).includes(code)) {
       setCode(examples[language]);
@@ -66,7 +79,7 @@ for i in range(3):
 
   const clearOutput = () => setOutput([]);
 
-  // ----------------- Input handling -----------------
+  // ----------------- Input Handling -----------------
   const getInput = (prompt: string) => {
     setInputPrompt(prompt);
     setWaitingForInput(true);
@@ -86,14 +99,13 @@ for i in range(3):
   // ----------------- Python Runner -----------------
   const runPython = async (code: string) => {
     if (!pyodide) {
-      addOutput('Pyodide is not loaded yet!', 'error');
+      addOutput('Python runtime is not ready yet!', 'error');
       return;
     }
 
     addOutput('>>> Python Execution Started', 'info');
     addOutput('', 'output');
 
-    // Expose getInput to Pyodide
     (window as any).get_input = async (prompt: string) => {
       const val = await getInput(prompt);
       addOutput(`${prompt} ${val}`, 'input');
@@ -178,50 +190,36 @@ def input(prompt=""):
     let i = 0;
     while(i < escaped.length){
       let matched = false;
-      // Comments
       if(lang==='python' && escaped[i]==='#'){
         const end = escaped.indexOf('\n',i);
         const comment = end===-1?escaped.slice(i):escaped.slice(i,end);
         result+=`<span class="comment">${comment}</span>`;
-        i+=comment.length;
-        matched=true;
+        i+=comment.length; matched=true;
       }else if(lang==='java' && escaped.slice(i,i+2)==='//'){
         const end = escaped.indexOf('\n',i);
         const comment = end===-1?escaped.slice(i):escaped.slice(i,end);
         result+=`<span class="comment">${comment}</span>`;
-        i+=comment.length;
-        matched=true;
-      }
-      // Strings
-      else if(escaped[i]==='"' || escaped[i]==="'"){
-        const quote = escaped[i];
-        let j=i+1;
-        let str=quote;
+        i+=comment.length; matched=true;
+      } else if(escaped[i]==='"' || escaped[i]==="'"){
+        const quote = escaped[i]; let j=i+1; let str=quote;
         while(j<escaped.length){
-          if(escaped[j]==='\\' && j+1<escaped.length){
-            str+=escaped[j]+escaped[j+1]; j+=2;
-          }else if(escaped[j]===quote){ str+=quote; j++; break;}
-          else{str+=escaped[j]; j++;}
+          if(escaped[j]==='\\' && j+1<escaped.length){ str+=escaped[j]+escaped[j+1]; j+=2;}
+          else if(escaped[j]===quote){ str+=quote; j++; break;}
+          else{ str+=escaped[j]; j++; }
         }
         result+=`<span class="string">${str}</span>`; i=j; matched=true;
-      }
-      // Numbers
-      else if(/\d/.test(escaped[i])){
-        let num=''; while(i<escaped.length && /[\d.]/.test(escaped[i])){num+=escaped[i]; i++;}
+      } else if(/\d/.test(escaped[i])){
+        let num=''; while(i<escaped.length && /[\d.]/.test(escaped[i])){ num+=escaped[i]; i++; }
         result+=`<span class="number">${num}</span>`; matched=true;
-      }
-      // Keywords & Builtins
-      else if(/[a-zA-Z_]/.test(escaped[i])){
-        let word=''; const start=i;
-        while(i<escaped.length && /[a-zA-Z0-9_]/.test(escaped[i])){word+=escaped[i]; i++;}
+      } else if(/[a-zA-Z_]/.test(escaped[i])){
+        let word=''; while(i<escaped.length && /[a-zA-Z0-9_]/.test(escaped[i])){ word+=escaped[i]; i++; }
         const isFunc=escaped[i]==='(';
         if(langKeywords.includes(word)) result+=`<span class="keyword">${word}</span>`;
         else if(langBuiltins.includes(word)) result+=`<span class="builtin">${word}</span>`;
         else if(isFunc) result+=`<span class="function">${word}</span>`;
-        else result+=word;
-        matched=true;
+        else result+=word; matched=true;
       }
-      if(!matched){result+=escaped[i]; i++;}
+      if(!matched){ result+=escaped[i]; i++; }
     }
     return result;
   };
@@ -235,6 +233,7 @@ def input(prompt=""):
     }
   };
 
+  // ----------------- JSX -----------------
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* Top Bar */}
@@ -250,7 +249,6 @@ def input(prompt=""):
             <p className="text-xs text-muted-foreground">Professional IDE Environment</p>
           </div>
         </div>
-
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 bg-secondary px-3 py-2 rounded-lg border border-border">
             {getLanguageIcon()}
@@ -264,22 +262,13 @@ def input(prompt=""):
               <option value="html">HTML</option>
             </select>
           </div>
-
-          <button
-            onClick={handleRun}
-            disabled={isRunning}
-            className="bg-primary hover:bg-primary/90 text-primary-foreground px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg hover:shadow-glow transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Play className="w-4 h-4" />
-            {isRunning?'Running...':'Run Code'}
+          <button onClick={handleRun} disabled={isRunning}
+            className="bg-primary hover:bg-primary/90 text-primary-foreground px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg hover:shadow-glow transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+            <Play className="w-4 h-4" /> {isRunning?'Running...':'Run Code'}
           </button>
-
-          <button
-            onClick={clearOutput}
-            className="bg-destructive hover:bg-destructive/90 text-destructive-foreground px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg transition-all"
-          >
-            <Trash2 className="w-4 h-4" />
-            Clear
+          <button onClick={clearOutput}
+            className="bg-destructive hover:bg-destructive/90 text-destructive-foreground px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg transition-all">
+            <Trash2 className="w-4 h-4"/> Clear
           </button>
         </div>
       </div>
@@ -299,11 +288,9 @@ def input(prompt=""):
               onChange={e=>setCode(e.target.value)}
               onKeyDown={handleKeyDown}
               className="absolute inset-0 w-full h-full p-6 bg-transparent text-transparent caret-primary font-mono text-sm resize-none focus:outline-none z-10"
-              spellCheck={false}
-              style={{lineHeight:'1.6',tabSize:4}}
+              spellCheck={false} style={{lineHeight:'1.6',tabSize:4}}
             />
-            <pre
-              className="absolute inset-0 w-full h-full p-6 font-mono text-sm overflow-auto pointer-events-none"
+            <pre className="absolute inset-0 w-full h-full p-6 font-mono text-sm overflow-auto pointer-events-none"
               style={{lineHeight:'1.6'}}
               dangerouslySetInnerHTML={{__html:highlightCode(code,language)}}
             />
@@ -316,10 +303,7 @@ def input(prompt=""):
             <Terminal className="w-4 h-4 text-accent" />
             <span className="font-medium">Output Console</span>
           </div>
-          <div
-            ref={outputRef}
-            className="flex-1 p-6 overflow-auto font-mono text-sm bg-[hsl(var(--console-bg))] flex flex-col"
-          >
+          <div ref={outputRef} className="flex-1 p-6 overflow-auto font-mono text-sm bg-[hsl(var(--console-bg))] flex flex-col">
             <div className="flex-1">
               {output.length===0 && !waitingForInput && (
                 <div className="text-muted-foreground italic">Click "Run Code" to see output here...</div>
@@ -334,15 +318,10 @@ def input(prompt=""):
                 }`}>{line.text||'\u00A0'}</div>
               ))}
             </div>
-
-            {/* Inline input */}
             {waitingForInput && (
               <div className="flex text-blue-400 font-mono mt-2">
                 <span>{inputPrompt} </span>
-                <input
-                  ref={inputRef}
-                  type="text"
-                  value={userInput}
+                <input ref={inputRef} type="text" value={userInput}
                   onChange={e=>setUserInput(e.target.value)}
                   onKeyDown={e=>e.key==='Enter' && handleInputSubmit()}
                   className="bg-background border-b border-blue-400 focus:outline-none flex-1"
