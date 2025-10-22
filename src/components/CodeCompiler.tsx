@@ -22,10 +22,13 @@ const CodeCompiler = () => {
 
   const examples = {
     python: `# Python Example
-name = input("What is your name: ")
-age = int(input("How old are you: "))
+name = input("What is your name? ")
+age = int(input("How old are you? "))
+print(f"Hello {name}!")
+print(f"You are {age} years old.")
 for i in range(3):
-    print(f"Hello {name}, you are {age} years old. Loop {i+1}")`,
+    print(f"Loop iteration: {i+1}")
+print("Program finished!")`,
     java: `// Java Example
 // Coming soon!`,
     html: `<!DOCTYPE html>
@@ -80,10 +83,12 @@ for i in range(3):
   const clearOutput = () => setOutput([]);
 
   // ---------------- Input Handling ----------------
-  const getInput = (prompt: string) => {
-    setInputPrompt(prompt);
-    setWaitingForInput(true);
-    return new Promise<string>(resolve => setInputResolve(() => resolve));
+  const getInput = (prompt: string): Promise<string> => {
+    return new Promise<string>(resolve => {
+      setInputPrompt(String(prompt));
+      setWaitingForInput(true);
+      setInputResolve(() => resolve);
+    });
   };
 
   // ---------------- Python Runner ----------------
@@ -93,26 +98,61 @@ for i in range(3):
     addOutput('>>> Python Execution Started', 'info');
     addOutput('', 'output');
 
-    // Override Python input
-    await pyodide.runPythonAsync(`
-from js import get_input
-__input = get_input
-def input(prompt=""):
-    return __input(prompt)
+    try {
+      // Redirect stdout
+      pyodide.runPython(`
+import sys
+import io
+sys.stdout = io.StringIO()
+sys.stderr = io.StringIO()
 `);
 
-    try {
-      // Execute line by line to support multiple inputs
-      const lines = code.split('\n');
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        await pyodide.runPythonAsync(line);
+      // Set up custom input function
+      pyodide.globals.set('get_input', getInput);
+      
+      await pyodide.runPythonAsync(`
+from js import get_input
+import builtins
+def custom_input(prompt=""):
+    result = get_input(str(prompt))
+    return result
+builtins.input = custom_input
+`);
+
+      // Redirect print to capture output
+      pyodide.globals.set('js_print', (text: string) => {
+        addOutput(String(text), 'output');
+      });
+
+      await pyodide.runPythonAsync(`
+import builtins
+def custom_print(*args, sep=' ', end='\\n', **kwargs):
+    from js import js_print
+    output = sep.join(str(arg) for arg in args) + end
+    js_print(output.rstrip('\\n'))
+builtins.print = custom_print
+`);
+
+      // Execute the entire code as one block
+      await pyodide.runPythonAsync(code);
+
+      // Get any remaining stdout/stderr
+      const stdout = pyodide.runPython('sys.stdout.getvalue()');
+      const stderr = pyodide.runPython('sys.stderr.getvalue()');
+      
+      if (stdout && stdout.trim()) {
+        stdout.trim().split('\n').forEach((line: string) => addOutput(line, 'output'));
       }
+      if (stderr && stderr.trim()) {
+        stderr.trim().split('\n').forEach((line: string) => addOutput(line, 'error'));
+      }
+
       addOutput('', 'output');
       addOutput('>>> Execution Completed Successfully', 'info');
-    } catch (err) {
-      addOutput('Error: ' + (err as Error).message, 'error');
+    } catch (err: any) {
+      const errorMsg = err.message || String(err);
+      addOutput('', 'output');
+      addOutput('Error: ' + errorMsg, 'error');
     }
   };
 
@@ -283,11 +323,30 @@ def input(prompt=""):
               }>{line.text||'\u00A0'}</div>
             ))}
             {waitingForInput && inputResolve && (
-              <div className="text-blue-400 mt-2">
-                {inputPrompt}{' '}
-                <span contentEditable suppressContentEditableWarning className="outline-none border-b border-blue-400"
+              <div className="text-blue-400 mt-2 flex items-start">
+                <span className="whitespace-pre">{inputPrompt}</span>
+                <span 
+                  contentEditable 
+                  suppressContentEditableWarning 
+                  className="outline-none border-b border-blue-400 min-w-[100px] ml-0"
+                  autoFocus
                   onKeyDown={e=>{
-                    if(e.key==='Enter'){ e.preventDefault(); const val = e.currentTarget.textContent||''; addOutput(inputPrompt+val,'input'); inputResolve(val); setWaitingForInput(false); setInputResolve(null); e.currentTarget.textContent=''; }
+                    if(e.key==='Enter'){ 
+                      e.preventDefault(); 
+                      const val = e.currentTarget.textContent||''; 
+                      addOutput(inputPrompt + val,'input'); 
+                      if (inputResolve) {
+                        inputResolve(val); 
+                      }
+                      setWaitingForInput(false); 
+                      setInputResolve(null); 
+                      e.currentTarget.textContent=''; 
+                    }
+                  }}
+                  ref={(el) => {
+                    if (el && waitingForInput) {
+                      setTimeout(() => el.focus(), 0);
+                    }
                   }}
                 ></span>
               </div>
