@@ -10,7 +10,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.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 }}
 
       - name: List folder contents before moving
         run: |
