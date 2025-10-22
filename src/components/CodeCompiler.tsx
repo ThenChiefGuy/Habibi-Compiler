@@ -40,7 +40,7 @@ for i in range(3):
 </html>`
   };
 
-  // ----------------- Load Pyodide Dynamically -----------------
+  // ----------------- Load Pyodide dynamically -----------------
   useEffect(() => {
     const loadPy = async () => {
       addOutput('Loading Python runtime...', 'info');
@@ -61,7 +61,7 @@ for i in range(3):
     }
   }, []);
 
-  // ----------------- Load Example Code -----------------
+  // ----------------- Load example code -----------------
   useEffect(() => {
     if (!code || Object.values(examples).includes(code)) {
       setCode(examples[language]);
