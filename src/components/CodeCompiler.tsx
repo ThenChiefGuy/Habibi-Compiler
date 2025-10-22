@@ -1,10 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Play, Trash2, Code2, Terminal, FileCode, Zap, Monitor } from 'lucide-react';
 
+declare global {
+  interface Window {
+    loadPyodide: any;
+  }
+}
+
 const CodeCompiler = () => {
   const [language, setLanguage] = useState('python');
   const [code, setCode] = useState('');
-  const [output, setOutput] = useState<Array<{ text: string; type: string }>>([]);
+  const [output, setOutput] = useState<{ text: string; type: string }[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [waitingForInput, setWaitingForInput] = useState(false);
   const [inputPrompt, setInputPrompt] = useState('');
@@ -25,45 +31,41 @@ for i in range(3):
     html: `<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Hello World</title>
-    <style>
-        body { font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: linear-gradient(135deg, #667eea, #764ba2); }
-        h1 { color: white; font-size: 48px; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); }
-    </style>
+  <meta charset="UTF-8">
+  <title>Hello World</title>
+  <style>
+    body { font-family: Arial; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; background:linear-gradient(135deg,#667eea,#764ba2);}
+    h1 { color:white; font-size:48px; text-shadow:2px 2px 4px rgba(0,0,0,0.3);}
+  </style>
 </head>
 <body>
-    <h1>Hello, World!</h1>
+  <h1>Hello, World!</h1>
 </body>
 </html>`
   };
 
-  // ----------------- Load Pyodide dynamically -----------------
+  // ---------------- Load Pyodide ----------------
   useEffect(() => {
-    const loadPy = async () => {
+    const loadPython = async () => {
       addOutput('Loading Python runtime...', 'info');
-      const py = await (window as any).loadPyodide({
-        indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.23.4/full/'
-      });
+      const py = await window.loadPyodide({ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.23.4/full/' });
       setPyodide(py);
       addOutput('Python runtime loaded ✅', 'info');
     };
 
-    if (!(window as any).loadPyodide) {
+    if (!window.loadPyodide) {
       const script = document.createElement('script');
       script.src = 'https://cdn.jsdelivr.net/pyodide/v0.23.4/full/pyodide.js';
-      script.onload = loadPy;
+      script.onload = loadPython;
       document.body.appendChild(script);
     } else {
-      loadPy();
+      loadPython();
     }
   }, []);
 
-  // ----------------- Load example code -----------------
+  // ---------------- Load Example ----------------
   useEffect(() => {
-    if (!code || Object.values(examples).includes(code)) {
-      setCode(examples[language]);
-    }
+    if (!code || Object.values(examples).includes(code)) setCode(examples[language]);
     setOutput([]);
   }, [language]);
 
@@ -77,37 +79,36 @@ for i in range(3):
 
   const clearOutput = () => setOutput([]);
 
-  // ----------------- Input Handling -----------------
+  // ---------------- Input Handling ----------------
   const getInput = (prompt: string) => {
     setInputPrompt(prompt);
     setWaitingForInput(true);
     return new Promise<string>(resolve => setInputResolve(() => resolve));
   };
 
-  // ----------------- Python Runner -----------------
+  // ---------------- Python Runner ----------------
   const runPython = async (code: string) => {
-    if (!pyodide) {
-      addOutput('Python runtime is not ready yet!', 'error');
-      return;
-    }
+    if (!pyodide) { addOutput('Python runtime not ready!', 'error'); return; }
 
     addOutput('>>> Python Execution Started', 'info');
     addOutput('', 'output');
 
-    (window as any).get_input = async (prompt: string) => {
-      const val = await getInput(prompt);
-      addOutput(`${prompt}${val}`, 'input');
-      return val;
-    };
-
-    try {
-      await pyodide.runPythonAsync(`
+    // Override Python input
+    await pyodide.runPythonAsync(`
 from js import get_input
 __input = get_input
 def input(prompt=""):
     return __input(prompt)
 `);
-      await pyodide.runPythonAsync(code);
+
+    try {
+      // Execute line by line to support multiple inputs
+      const lines = code.split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        await pyodide.runPythonAsync(line);
+      }
       addOutput('', 'output');
       addOutput('>>> Execution Completed Successfully', 'info');
     } catch (err) {
@@ -115,12 +116,10 @@ def input(prompt=""):
     }
   };
 
-  // ----------------- Java Runner -----------------
-  const runJava = async () => {
-    addOutput('>>> Java execution is coming soon!', 'info');
-  };
+  // ---------------- Java Runner ----------------
+  const runJava = async () => addOutput('>>> Java execution is coming soon!', 'info');
 
-  // ----------------- HTML Runner -----------------
+  // ---------------- HTML Runner ----------------
   const runHTML = (code: string) => {
     if (outputRef.current) {
       const iframe = document.createElement('iframe');
@@ -128,15 +127,11 @@ def input(prompt=""):
       outputRef.current.innerHTML = '';
       outputRef.current.appendChild(iframe);
       const doc = iframe.contentDocument || iframe.contentWindow?.document;
-      if (doc) {
-        doc.open();
-        doc.write(code);
-        doc.close();
-      }
+      if (doc) { doc.open(); doc.write(code); doc.close(); }
     }
   };
 
-  // ----------------- Run Handler -----------------
+  // ---------------- Run Handler ----------------
   const handleRun = async () => {
     setIsRunning(true);
     clearOutput();
@@ -146,7 +141,7 @@ def input(prompt=""):
     setIsRunning(false);
   };
 
-  // ----------------- Tab Handling -----------------
+  // ---------------- Editor Tab Handling ----------------
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Tab') {
       e.preventDefault();
@@ -159,7 +154,7 @@ def input(prompt=""):
     }
   };
 
-  // ----------------- Syntax Highlighting -----------------
+  // ---------------- Syntax Highlighting ----------------
   const highlightCode = (code: string, lang: string) => {
     let escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const keywords = {
@@ -174,51 +169,57 @@ def input(prompt=""):
     };
     const langKeywords = keywords[lang as keyof typeof keywords] || [];
     const langBuiltins = builtins[lang as keyof typeof builtins] || [];
+
     let result = '';
     let i = 0;
-    while(i < escaped.length){
+    while (i < escaped.length) {
       let matched = false;
-      if(lang==='python' && escaped[i]==='#'){
-        const end = escaped.indexOf('\n',i);
-        const comment = end===-1?escaped.slice(i):escaped.slice(i,end);
-        result+=`<span class="comment">${comment}</span>`;
-        i+=comment.length; matched=true;
-      }else if(lang==='java' && escaped.slice(i,i+2)==='//'){
-        const end = escaped.indexOf('\n',i);
-        const comment = end===-1?escaped.slice(i):escaped.slice(i,end);
-        result+=`<span class="comment">${comment}</span>`;
-        i+=comment.length; matched=true;
-      } else if(escaped[i]==='"' || escaped[i]==="'"){
+      // Comments
+      if (lang === 'python' && escaped[i] === '#') {
+        const end = escaped.indexOf('\n', i);
+        const comment = end === -1 ? escaped.slice(i) : escaped.slice(i, end);
+        result += `<span class="comment">${comment}</span>`;
+        i += comment.length; matched = true;
+      } else if (lang === 'java' && escaped.slice(i, i+2) === '//') {
+        const end = escaped.indexOf('\n', i);
+        const comment = end === -1 ? escaped.slice(i) : escaped.slice(i, end);
+        result += `<span class="comment">${comment}</span>`;
+        i += comment.length; matched = true;
+      }
+      // Strings
+      else if (escaped[i]==='"' || escaped[i]==="'") {
         const quote = escaped[i]; let j=i+1; let str=quote;
         while(j<escaped.length){
-          if(escaped[j]==='\\' && j+1<escaped.length){ str+=escaped[j]+escaped[j+1]; j+=2;}
-          else if(escaped[j]===quote){ str+=quote; j++; break;}
+          if(escaped[j]==='\\' && j+1<escaped.length){ str+=escaped[j]+escaped[j+1]; j+=2; }
+          else if(escaped[j]===quote){ str+=quote; j++; break; }
           else{ str+=escaped[j]; j++; }
         }
-        result+=`<span class="string">${str}</span>`; i=j; matched=true;
-      } else if(/\d/.test(escaped[i])){
+        result += `<span class="string">${str}</span>`; i=j; matched=true;
+      }
+      // Numbers
+      else if(/\d/.test(escaped[i])){
         let num=''; while(i<escaped.length && /[\d.]/.test(escaped[i])){ num+=escaped[i]; i++; }
         result+=`<span class="number">${num}</span>`; matched=true;
-      } else if(/[a-zA-Z_]/.test(escaped[i])){
-        let word=''; while(i<escaped.length && /[a-zA-Z0-9_]/.test(escaped[i])){ word+=escaped[i]; i++; }
-        const isFunc=escaped[i]==='(';
+      }
+      // Keywords/Builtins/Functions
+      else if(/[a-zA-Z_]/.test(escaped[i])){
+        let word=''; const start=i;
+        while(i<escaped.length && /[a-zA-Z0-9_]/.test(escaped[i])) word+=escaped[i],i++;
+        const isFunc = escaped[i]==='(';
         if(langKeywords.includes(word)) result+=`<span class="keyword">${word}</span>`;
         else if(langBuiltins.includes(word)) result+=`<span class="builtin">${word}</span>`;
         else if(isFunc) result+=`<span class="function">${word}</span>`;
-        else result+=word; matched=true;
+        else result+=word;
+        matched=true;
       }
       if(!matched){ result+=escaped[i]; i++; }
     }
     return result;
   };
 
+  // ---------------- Language Icon ----------------
   const getLanguageIcon = () => {
-    switch(language){
-      case 'python': return <FileCode className="w-4 h-4" />;
-      case 'java': return <Code2 className="w-4 h-4" />;
-      case 'html': return <Monitor className="w-4 h-4" />;
-      default: return <FileCode className="w-4 h-4" />;
-    }
+    switch(language){ case 'python': return <FileCode className="w-4 h-4"/>; case 'java': return <Code2 className="w-4 h-4"/>; case 'html': return <Monitor className="w-4 h-4"/>; default: return <FileCode className="w-4 h-4"/>; }
   };
 
   return (
@@ -227,114 +228,81 @@ def input(prompt=""):
       <div className="bg-card border-b border-border px-6 py-3 flex justify-between items-center">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-gradient-to-br from-primary to-accent rounded-xl flex items-center justify-center shadow-glow">
-            <Code2 className="w-5 h-5 text-primary-foreground" />
+            <Code2 className="w-5 h-5 text-primary-foreground"/>
           </div>
           <div>
-            <h1 className="text-lg font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-              Code Compiler
-            </h1>
+            <h1 className="text-lg font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">Code Compiler</h1>
             <p className="text-xs text-muted-foreground">Professional IDE Environment</p>
           </div>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 bg-secondary px-3 py-2 rounded-lg border border-border">
             {getLanguageIcon()}
-            <select
-              value={language}
-              onChange={e=>setLanguage(e.target.value)}
-              className="bg-transparent text-foreground focus:outline-none cursor-pointer font-medium"
-            >
+            <select value={language} onChange={(e)=>setLanguage(e.target.value)} className="bg-transparent text-foreground focus:outline-none cursor-pointer font-medium">
               <option value="python">Python</option>
               <option value="java">Java</option>
               <option value="html">HTML</option>
             </select>
           </div>
-          <button onClick={handleRun} disabled={isRunning}
-            className="bg-primary hover:bg-primary/90 text-primary-foreground px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg hover:shadow-glow transition-all disabled:opacity-50 disabled:cursor-not-allowed">
-            <Play className="w-4 h-4" /> {isRunning?'Running...':'Run Code'}
+          <button onClick={handleRun} disabled={isRunning} className="bg-primary hover:bg-primary/90 text-primary-foreground px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg disabled:opacity-50 disabled:cursor-not-allowed">
+            <Play className="w-4 h-4"/>{isRunning ? 'Running...' : 'Run Code'}
           </button>
-          <button onClick={clearOutput}
-            className="bg-destructive hover:bg-destructive/90 text-destructive-foreground px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg transition-all">
-            <Trash2 className="w-4 h-4"/> Clear
+          <button onClick={clearOutput} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg">
+            <Trash2 className="w-4 h-4"/>Clear
           </button>
         </div>
       </div>
 
-      {/* Editor & Output */}
+      {/* Editor and Console */}
       <div className="flex h-[calc(100vh-73px)]">
-        {/* Editor */}
+        {/* Code Editor */}
         <div className="flex-1 flex flex-col bg-background">
           <div className="bg-card px-4 py-2 border-b border-border text-sm text-muted-foreground flex items-center gap-2">
-            <Zap className="w-4 h-4 text-primary" />
-            <span className="font-medium">Code Editor</span>
+            <Zap className="w-4 h-4 text-primary"/>Code Editor
           </div>
           <div className="flex-1 relative overflow-hidden">
-            <textarea
-              ref={textareaRef}
-              value={code}
-              onChange={e=>setCode(e.target.value)}
-              onKeyDown={handleKeyDown}
-              className="absolute inset-0 w-full h-full p-6 bg-transparent text-transparent caret-primary font-mono text-sm resize-none focus:outline-none z-10"
-              spellCheck={false} style={{lineHeight:'1.6',tabSize:4}}
-            />
-            <pre className="absolute inset-0 w-full h-full p-6 font-mono text-sm overflow-auto pointer-events-none"
-              style={{lineHeight:'1.6'}}
-              dangerouslySetInnerHTML={{__html:highlightCode(code, language)}}/>
+            <textarea ref={textareaRef} value={code} onChange={e=>setCode(e.target.value)} onKeyDown={handleKeyDown}
+              className="absolute inset-0 w-full h-full p-6 bg-transparent text-transparent caret-primary font-mono text-sm resize-none focus:outline-none z-10" spellCheck="false" style={{lineHeight:'1.6', tabSize:4}}/>
+            <pre className="absolute inset-0 w-full h-full p-6 font-mono text-sm overflow-auto pointer-events-none" style={{lineHeight:'1.6'}} dangerouslySetInnerHTML={{__html:highlightCode(code,language)}}/>
           </div>
         </div>
 
         {/* Output Console */}
         <div className="w-[45%] flex flex-col bg-console border-l border-border">
           <div className="bg-card px-4 py-2 border-b border-border text-sm text-muted-foreground flex items-center gap-2">
-            <Terminal className="w-4 h-4 text-accent" />
-            <span className="font-medium">Output Console</span>
+            <Terminal className="w-4 h-4 text-accent"/>Output Console
           </div>
           <div ref={outputRef} className="flex-1 p-6 overflow-auto font-mono text-sm bg-[hsl(var(--console-bg))] flex flex-col">
-            <div className="flex-1">
-              {output.length===0 && language!=='html' && !waitingForInput && 
-                <div className="text-muted-foreground italic">Click "Run Code" to see output here...</div>}
-              {output.map((line,idx)=>(
-                <div key={idx} className={
-                  line.type==='info'?'text-primary font-semibold':
-                  line.type==='success'?'text-green-400':
-                  line.type==='error'?'text-destructive font-semibold':
-                  line.type==='warning'?'text-yellow-400':
-                  line.type==='input'?'text-blue-400':'text-foreground'
-                }>
-                  {line.text||'\u00A0'}
-                </div>
-              ))}
-              {waitingForInput && (
-                <div className="text-blue-400">
-                  {inputPrompt} <span
-                    contentEditable
-                    suppressContentEditableWarning
-                    className="outline-none"
-                    onKeyDown={(e)=>{
-                      if(e.key==='Enter'){
-                        e.preventDefault();
-                        const val = e.currentTarget.textContent||'';
-                        addOutput(inputPrompt+val,'input');
-                        if(inputResolve) inputResolve(val);
-                        setWaitingForInput(false);
-                        setInputResolve(null);
-                      }
-                    }}
-                  ></span>
-                </div>
-              )}
-            </div>
+            {output.map((line,idx)=>(
+              <div key={idx} className={
+                line.type==='info'?'text-primary font-semibold':
+                line.type==='success'?'text-green-400':
+                line.type==='error'?'text-destructive font-semibold':
+                line.type==='warning'?'text-yellow-400':
+                line.type==='input'?'text-blue-400':'text-foreground'
+              }>{line.text||'\u00A0'}</div>
+            ))}
+            {waitingForInput && inputResolve && (
+              <div className="text-blue-400 mt-2">
+                {inputPrompt}{' '}
+                <span contentEditable suppressContentEditableWarning className="outline-none border-b border-blue-400"
+                  onKeyDown={e=>{
+                    if(e.key==='Enter'){ e.preventDefault(); const val = e.currentTarget.textContent||''; addOutput(inputPrompt+val,'input'); inputResolve(val); setWaitingForInput(false); setInputResolve(null); e.currentTarget.textContent=''; }
+                  }}
+                ></span>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
       <style>{`
-        .keyword { color: hsl(330, 85%, 70%); font-weight: 600; }
-        .string { color: hsl(135, 94%, 65%); }
-        .number { color: hsl(271, 91%, 75%); }
-        .comment { color: hsl(220, 15%, 55%); font-style: italic; }
-        .function { color: hsl(190, 95%, 65%); }
-        .builtin { color: hsl(50, 100%, 65%); }
+        .keyword { color: hsl(330,85%,70%); font-weight:600; }
+        .string { color: hsl(135,94%,65%); }
+        .number { color: hsl(271,91%,75%); }
+        .comment { color: hsl(220,15%,55%); font-style:italic; }
+        .function { color: hsl(190,95%,65%); }
+        .builtin { color: hsl(50,100%,65%); }
         .bg-console { background: hsl(var(--console-bg)); }
         .shadow-glow { box-shadow: var(--shadow-glow); }
       `}</style>
