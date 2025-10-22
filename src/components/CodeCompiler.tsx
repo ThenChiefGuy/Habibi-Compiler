@@ -6,8 +6,13 @@ const CodeCompiler = () => {
   const [code, setCode] = useState('');
   const [output, setOutput] = useState<Array<{ text: string; type: string }>>([]);
   const [isRunning, setIsRunning] = useState(false);
+  const [waitingForInput, setWaitingForInput] = useState(false);
+  const [inputPrompt, setInputPrompt] = useState('');
+  const [userInput, setUserInput] = useState('');
+  const [inputValues, setInputValues] = useState<string[]>([]);
   const outputRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const examples = {
     python: `# Python Example
@@ -72,52 +77,115 @@ public class Main {
     setOutput([]);
   };
 
-  const runPython = (code: string) => {
+  const runPython = async (code: string) => {
     addOutput('>>> Python Execution Started', 'info');
     addOutput('', 'output');
 
     try {
       const lines = code.split('\n');
+      const storedInputs: string[] = [];
+      let inputIndex = 0;
+      
+      // Collect all input() calls first
+      const inputMatches = code.match(/input\([^)]*\)/g);
+      
+      if (inputMatches && inputMatches.length > 0) {
+        // Get inputs from user
+        for (let i = 0; i < inputMatches.length; i++) {
+          const match = inputMatches[i];
+          const promptMatch = match.match(/input\(["']([^"']*)["']\)/);
+          const prompt = promptMatch ? promptMatch[1] : 'Enter value:';
+          
+          const value = await new Promise<string>((resolve) => {
+            setInputPrompt(prompt);
+            setWaitingForInput(true);
+            setUserInput('');
+            
+            const checkInput = setInterval(() => {
+              if (inputValues.length > inputIndex) {
+                clearInterval(checkInput);
+                resolve(inputValues[inputIndex]);
+                inputIndex++;
+              }
+            }, 100);
+          });
+          
+          storedInputs.push(value);
+          addOutput(`${prompt} ${value}`, 'input');
+        }
+        
+        setWaitingForInput(false);
+        setInputValues([]);
+      }
+      
+      // Now execute with stored inputs
+      inputIndex = 0;
+      const variables: Record<string, any> = {};
       
       for (let line of lines) {
+        line = line.trim();
+        if (!line || line.startsWith('#')) continue;
+        
+        // Handle input assignments
+        const inputAssignMatch = line.match(/(\w+)\s*=\s*(\w+)\(input\([^)]*\)\)/);
+        if (inputAssignMatch) {
+          const varName = inputAssignMatch[1];
+          const inputVal = storedInputs[inputIndex++];
+          
+          // Convert based on type function
+          if (inputAssignMatch[2] === 'float') {
+            variables[varName] = parseFloat(inputVal);
+          } else if (inputAssignMatch[2] === 'int') {
+            variables[varName] = parseInt(inputVal);
+          } else {
+            variables[varName] = inputVal;
+          }
+          continue;
+        }
+        
+        // Handle simple assignments
+        const assignMatch = line.match(/(\w+)\s*=\s*input\([^)]*\)/);
+        if (assignMatch) {
+          const varName = assignMatch[1];
+          variables[varName] = storedInputs[inputIndex++];
+          continue;
+        }
+        
+        // Handle print statements
         const printMatch = line.match(/print\((.*)\)/);
         if (printMatch) {
           let content = printMatch[1].trim();
           
-          // Handle f-strings
-          if (content.startsWith('f"') || content.startsWith("f'")) {
-            content = content.slice(2, -1);
-            
-            // Replace simple variables
-            content = content.replace(/\{([^}]+)\}/g, (match, expr) => {
-              expr = expr.trim();
-              
-              // Handle simple expressions
-              if (expr.includes('sum(')) {
-                return '15';
-              }
-              if (expr.includes('/')) {
-                return '3.0';
-              }
-              if (expr === 'fib') {
-                return '[0, 1, 1, 2, 3, 5, 8, 13, 21, 34]';
-              }
-              if (expr === 'primes') {
-                return '[2, 3, 5, 7, 11, 13, 17, 19, 23, 29]';
-              }
-              return expr;
-            });
-          } else {
-            content = content.replace(/^["']|["']$/g, '');
-          }
+          // Handle string concatenation and variables
+          content = content.replace(/["']/g, '');
           
-          content = content.replace(/\\n/g, '\n');
+          // Replace variables
+          Object.keys(variables).forEach(varName => {
+            const regex = new RegExp(`\\b${varName}\\b`, 'g');
+            content = content.replace(regex, String(variables[varName]));
+          });
           
-          if (content.includes('\n')) {
-            content.split('\n').forEach(l => addOutput(l, 'success'));
-          } else {
-            addOutput(content, 'success');
-          }
+          // Handle basic operations
+          content = content.replace(/(\d+\.?\d*)\s*([+\-*/])\s*(\d+\.?\d*)/g, (match, a, op, b) => {
+            const numA = parseFloat(a);
+            const numB = parseFloat(b);
+            switch (op) {
+              case '+': return String(numA + numB);
+              case '-': return String(numA - numB);
+              case '*': return String(numA * numB);
+              case '/': return numB !== 0 ? String(numA / numB) : 'Error: Division by zero';
+              default: return match;
+            }
+          });
+          
+          content = content.replace(/\s*,\s*/g, ' ');
+          addOutput(content, 'success');
+        }
+        
+        // Handle if/elif/else (simplified)
+        if (line.startsWith('if ') || line.startsWith('elif ')) {
+          // Just acknowledge control flow
+          continue;
         }
       }
       
@@ -125,6 +193,13 @@ public class Main {
       addOutput('>>> Execution Completed Successfully', 'info');
     } catch (error) {
       addOutput('Error: ' + (error as Error).message, 'error');
+    }
+  };
+  
+  const handleInputSubmit = () => {
+    if (userInput.trim()) {
+      setInputValues(prev => [...prev, userInput.trim()]);
+      setUserInput('');
     }
   };
 
@@ -193,74 +268,134 @@ public class Main {
     }
   };
 
-  const handleRun = () => {
+  const handleRun = async () => {
     setIsRunning(true);
     clearOutput();
     
-    setTimeout(() => {
-      if (language === 'python') {
-        runPython(code);
-      } else if (language === 'java') {
-        runJava(code);
-      } else if (language === 'html') {
-        runHTML(code);
-      }
-      setIsRunning(false);
-    }, 100);
+    if (language === 'python') {
+      await runPython(code);
+    } else if (language === 'java') {
+      runJava(code);
+    } else if (language === 'html') {
+      runHTML(code);
+    }
+    setIsRunning(false);
   };
 
   const highlightCode = (code: string, lang: string) => {
+    // Escape HTML
+    let escaped = code
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
     const keywords = {
-      python: ['def', 'return', 'if', 'else', 'for', 'in', 'range', 'import', 'from', 'class', 'True', 'False', 'None', 'and', 'or', 'not', 'while', 'break', 'continue', 'pass', 'try', 'except', 'finally', 'with', 'as', 'lambda', 'yield'],
+      python: ['def', 'return', 'if', 'else', 'elif', 'for', 'in', 'range', 'import', 'from', 'class', 'True', 'False', 'None', 'and', 'or', 'not', 'while', 'break', 'continue', 'pass', 'try', 'except', 'finally', 'with', 'as', 'lambda', 'yield'],
       java: ['public', 'private', 'protected', 'static', 'void', 'int', 'double', 'float', 'String', 'boolean', 'class', 'return', 'if', 'else', 'for', 'while', 'new', 'this', 'super', 'extends', 'implements', 'import', 'package', 'true', 'false', 'null', 'try', 'catch', 'finally', 'throw', 'throws'],
       html: ['DOCTYPE', 'html', 'head', 'body', 'title', 'style', 'script', 'div', 'span', 'a', 'img', 'input', 'button', 'form', 'meta', 'link']
     };
 
     const builtins = {
-      python: ['print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple', 'sum', 'min', 'max', 'abs', 'round', 'sorted', 'enumerate', 'zip', 'map', 'filter'],
+      python: ['print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple', 'sum', 'min', 'max', 'abs', 'round', 'sorted', 'enumerate', 'zip', 'map', 'filter', 'input'],
       java: ['System', 'String', 'Math', 'Integer', 'Double', 'Boolean', 'Array', 'List', 'ArrayList', 'HashMap', 'println', 'print'],
       html: []
     };
 
-    let highlighted = code;
     const langKeywords = keywords[lang as keyof typeof keywords] || [];
     const langBuiltins = builtins[lang as keyof typeof builtins] || [];
 
-    // Comments
-    if (lang === 'python') {
-      highlighted = highlighted.replace(/(#.*$)/gm, '<span class="comment">$1</span>');
-      highlighted = highlighted.replace(/("""[\s\S]*?""")/g, '<span class="comment">$1</span>');
-    } else if (lang === 'java') {
-      highlighted = highlighted.replace(/(\/\/.*$)/gm, '<span class="comment">$1</span>');
-      highlighted = highlighted.replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="comment">$1</span>');
-    } else if (lang === 'html') {
-      highlighted = highlighted.replace(/(<!--[\s\S]*?-->)/g, '<span class="comment">$1</span>');
+    // Process in order: comments, strings, numbers, keywords, builtins, functions
+    let result = '';
+    let i = 0;
+    
+    while (i < escaped.length) {
+      let matched = false;
+
+      // Check for comments
+      if (lang === 'python' && escaped[i] === '#') {
+        const endOfLine = escaped.indexOf('\n', i);
+        const comment = endOfLine === -1 ? escaped.slice(i) : escaped.slice(i, endOfLine);
+        result += `<span class="comment">${comment}</span>`;
+        i += comment.length;
+        matched = true;
+      } else if (lang === 'java' && escaped.slice(i, i + 2) === '//') {
+        const endOfLine = escaped.indexOf('\n', i);
+        const comment = endOfLine === -1 ? escaped.slice(i) : escaped.slice(i, endOfLine);
+        result += `<span class="comment">${comment}</span>`;
+        i += comment.length;
+        matched = true;
+      }
+      // Check for strings
+      else if (escaped[i] === '"' || escaped[i] === "'") {
+        const quote = escaped[i];
+        let j = i + 1;
+        let str = quote;
+        
+        // Check for f-string
+        const isFString = i > 0 && escaped[i - 1] === 'f';
+        if (isFString && result.endsWith('f')) {
+          result = result.slice(0, -1);
+          str = 'f' + str;
+        }
+        
+        while (j < escaped.length) {
+          if (escaped[j] === '\\' && j + 1 < escaped.length) {
+            str += escaped[j] + escaped[j + 1];
+            j += 2;
+          } else if (escaped[j] === quote) {
+            str += quote;
+            j++;
+            break;
+          } else {
+            str += escaped[j];
+            j++;
+          }
+        }
+        result += `<span class="string">${str}</span>`;
+        i = j;
+        matched = true;
+      }
+      // Check for numbers
+      else if (/\d/.test(escaped[i])) {
+        let num = '';
+        while (i < escaped.length && /[\d.]/.test(escaped[i])) {
+          num += escaped[i];
+          i++;
+        }
+        result += `<span class="number">${num}</span>`;
+        matched = true;
+      }
+      // Check for keywords and builtins
+      else if (/[a-zA-Z_]/.test(escaped[i])) {
+        let word = '';
+        const start = i;
+        while (i < escaped.length && /[a-zA-Z0-9_]/.test(escaped[i])) {
+          word += escaped[i];
+          i++;
+        }
+        
+        // Check if followed by (
+        const isFunction = escaped[i] === '(';
+        
+        if (langKeywords.includes(word)) {
+          result += `<span class="keyword">${word}</span>`;
+        } else if (langBuiltins.includes(word)) {
+          result += `<span class="builtin">${word}</span>`;
+        } else if (isFunction) {
+          result += `<span class="function">${word}</span>`;
+        } else {
+          result += word;
+        }
+        matched = true;
+      }
+
+      if (!matched) {
+        result += escaped[i];
+        i++;
+      }
     }
 
-    // Strings
-    highlighted = highlighted.replace(/("(?:[^"\\]|\\.)*")/g, '<span class="string">$1</span>');
-    highlighted = highlighted.replace(/('(?:[^'\\]|\\.)*')/g, '<span class="string">$1</span>');
-    highlighted = highlighted.replace(/(f"(?:[^"\\]|\\.)*")/g, '<span class="string">$1</span>');
-
-    // Numbers
-    highlighted = highlighted.replace(/\b(\d+\.?\d*)\b/g, '<span class="number">$1</span>');
-
-    // Builtins
-    langBuiltins.forEach(builtin => {
-      const regex = new RegExp(`\\b(${builtin})\\b`, 'g');
-      highlighted = highlighted.replace(regex, '<span class="builtin">$1</span>');
-    });
-
-    // Keywords
-    langKeywords.forEach(keyword => {
-      const regex = new RegExp(`\\b(${keyword})\\b`, 'g');
-      highlighted = highlighted.replace(regex, '<span class="keyword">$1</span>');
-    });
-
-    // Functions
-    highlighted = highlighted.replace(/\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g, '<span class="function">$1</span>(');
-
-    return highlighted;
+    return result;
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -376,27 +511,54 @@ public class Main {
           </div>
           <div
             ref={outputRef}
-            className="flex-1 p-6 overflow-auto font-mono text-sm bg-[hsl(var(--console-bg))]"
+            className="flex-1 p-6 overflow-auto font-mono text-sm bg-[hsl(var(--console-bg))] flex flex-col"
           >
-            {output.length === 0 && language !== 'html' && (
-              <div className="text-muted-foreground italic">
-                Click "Run Code" to see output here...
+            <div className="flex-1">
+              {output.length === 0 && language !== 'html' && !waitingForInput && (
+                <div className="text-muted-foreground italic">
+                  Click "Run Code" to see output here...
+                </div>
+              )}
+              {output.map((line, idx) => (
+                <div
+                  key={idx}
+                  className={`mb-1 ${
+                    line.type === 'info' ? 'text-primary font-semibold' :
+                    line.type === 'success' ? 'text-green-400' :
+                    line.type === 'error' ? 'text-destructive font-semibold' :
+                    line.type === 'warning' ? 'text-yellow-400' :
+                    line.type === 'input' ? 'text-blue-400' :
+                    'text-foreground'
+                  }`}
+                >
+                  {line.text || '\u00A0'}
+                </div>
+              ))}
+            </div>
+            
+            {waitingForInput && (
+              <div className="mt-4 border-t border-border pt-4">
+                <div className="text-yellow-400 mb-2">{inputPrompt}</div>
+                <div className="flex gap-2">
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={userInput}
+                    onChange={(e) => setUserInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleInputSubmit()}
+                    className="flex-1 bg-background border border-border rounded px-3 py-2 text-foreground focus:outline-none focus:border-primary"
+                    placeholder="Type your input..."
+                    autoFocus
+                  />
+                  <button
+                    onClick={handleInputSubmit}
+                    className="bg-primary hover:bg-primary/90 text-primary-foreground px-4 py-2 rounded font-medium"
+                  >
+                    Submit
+                  </button>
+                </div>
               </div>
             )}
-            {output.map((line, idx) => (
-              <div
-                key={idx}
-                className={`mb-1 ${
-                  line.type === 'info' ? 'text-primary font-semibold' :
-                  line.type === 'success' ? 'text-green-400' :
-                  line.type === 'error' ? 'text-destructive font-semibold' :
-                  line.type === 'warning' ? 'text-yellow-400' :
-                  'text-foreground'
-                }`}
-              >
-                {line.text || '\u00A0'}
-              </div>
-            ))}
           </div>
         </div>
       </div>
