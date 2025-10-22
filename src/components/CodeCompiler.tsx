@@ -8,13 +8,11 @@ const CodeCompiler = () => {
   const [isRunning, setIsRunning] = useState(false);
   const [waitingForInput, setWaitingForInput] = useState(false);
   const [inputPrompt, setInputPrompt] = useState('');
-  const [userInput, setUserInput] = useState('');
   const [inputResolve, setInputResolve] = useState<((val: string) => void) | null>(null);
   const [pyodide, setPyodide] = useState<any>(null);
 
   const outputRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
 
   const examples = {
     python: `# Python Example
@@ -83,17 +81,7 @@ for i in range(3):
   const getInput = (prompt: string) => {
     setInputPrompt(prompt);
     setWaitingForInput(true);
-    setUserInput('');
     return new Promise<string>(resolve => setInputResolve(() => resolve));
-  };
-
-  const handleInputSubmit = () => {
-    if (userInput.trim() && inputResolve) {
-      inputResolve(userInput.trim());
-      setUserInput('');
-      setInputResolve(null);
-      setWaitingForInput(false);
-    }
   };
 
   // ----------------- Python Runner -----------------
@@ -108,7 +96,7 @@ for i in range(3):
 
     (window as any).get_input = async (prompt: string) => {
       const val = await getInput(prompt);
-      addOutput(`${prompt} ${val}`, 'input');
+      addOutput(`${prompt}${val}`, 'input');
       return val;
     };
 
@@ -233,7 +221,6 @@ def input(prompt=""):
     }
   };
 
-  // ----------------- JSX -----------------
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* Top Bar */}
@@ -292,12 +279,11 @@ def input(prompt=""):
             />
             <pre className="absolute inset-0 w-full h-full p-6 font-mono text-sm overflow-auto pointer-events-none"
               style={{lineHeight:'1.6'}}
-              dangerouslySetInnerHTML={{__html:highlightCode(code,language)}}
-            />
+              dangerouslySetInnerHTML={{__html:highlightCode(code, language)}}/>
           </div>
         </div>
 
-        {/* Output */}
+        {/* Output Console */}
         <div className="w-[45%] flex flex-col bg-console border-l border-border">
           <div className="bg-card px-4 py-2 border-b border-border text-sm text-muted-foreground flex items-center gap-2">
             <Terminal className="w-4 h-4 text-accent" />
@@ -305,30 +291,39 @@ def input(prompt=""):
           </div>
           <div ref={outputRef} className="flex-1 p-6 overflow-auto font-mono text-sm bg-[hsl(var(--console-bg))] flex flex-col">
             <div className="flex-1">
-              {output.length===0 && !waitingForInput && (
-                <div className="text-muted-foreground italic">Click "Run Code" to see output here...</div>
-              )}
+              {output.length===0 && language!=='html' && !waitingForInput && 
+                <div className="text-muted-foreground italic">Click "Run Code" to see output here...</div>}
               {output.map((line,idx)=>(
-                <div key={idx} className={`mb-1 ${
+                <div key={idx} className={
                   line.type==='info'?'text-primary font-semibold':
                   line.type==='success'?'text-green-400':
                   line.type==='error'?'text-destructive font-semibold':
                   line.type==='warning'?'text-yellow-400':
                   line.type==='input'?'text-blue-400':'text-foreground'
-                }`}>{line.text||'\u00A0'}</div>
+                }>
+                  {line.text||'\u00A0'}
+                </div>
               ))}
+              {waitingForInput && (
+                <div className="text-blue-400">
+                  {inputPrompt} <span
+                    contentEditable
+                    suppressContentEditableWarning
+                    className="outline-none"
+                    onKeyDown={(e)=>{
+                      if(e.key==='Enter'){
+                        e.preventDefault();
+                        const val = e.currentTarget.textContent||'';
+                        addOutput(inputPrompt+val,'input');
+                        if(inputResolve) inputResolve(val);
+                        setWaitingForInput(false);
+                        setInputResolve(null);
+                      }
+                    }}
+                  ></span>
+                </div>
+              )}
             </div>
-            {waitingForInput && (
-              <div className="flex text-blue-400 font-mono mt-2">
-                <span>{inputPrompt} </span>
-                <input ref={inputRef} type="text" value={userInput}
-                  onChange={e=>setUserInput(e.target.value)}
-                  onKeyDown={e=>e.key==='Enter' && handleInputSubmit()}
-                  className="bg-background border-b border-blue-400 focus:outline-none flex-1"
-                  autoFocus
-                />
-              </div>
-            )}
           </div>
         </div>
       </div>
