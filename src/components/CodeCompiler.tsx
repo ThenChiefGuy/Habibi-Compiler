@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Trash2, Code2, Terminal, FileCode, Zap, Monitor, Loader2 } from 'lucide-react';
+import { Play, Trash2, Code2, Terminal, FileCode, Zap, Monitor, Loader2, Square } from 'lucide-react';
 
 const CodeCompiler = () => {
   const [language, setLanguage] = useState('python');
@@ -11,28 +11,33 @@ const CodeCompiler = () => {
   const [waitingForInput, setWaitingForInput] = useState(false);
   const [inputPrompt, setInputPrompt] = useState('');
   const [userInput, setUserInput] = useState('');
+  const [executionTime, setExecutionTime] = useState<number | null>(null);
   const outputRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const pyodideRef = useRef<any>(null);
   const inputResolverRef = useRef<((value: string) => void) | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const outputBufferRef = useRef<string[]>([]);
+  const executionStartTimeRef = useRef<number>(0);
 
   const examples = {
-    python: `# Python 3.11 Console
-# Full Python standard library available
+    python: `# Python 3.11 - Full Standard Library
+# Try importing any module: math, random, json, etc.
 
-# Basic operations
-print("Hello from Python 3.11!")
-print(f"2 + 2 = {2 + 2}")
+# Basic example
+name = input("Enter your name: ")
+print(f"Hello, {name}!")
+
+# Math operations
+import math
+numbers = [1, 2, 3, 4, 5]
+print(f"Sum: {sum(numbers)}")
+print(f"Square root of 16: {math.sqrt(16)}")
 
 # List comprehension
-squares = [x**2 for x in range(5)]
-print(f"Squares: {squares}")
-
-# Using standard library
-import math
-print(f"π = {math.pi:.4f}")
-print(f"√16 = {math.sqrt(16)}")`,
+squares = [x**2 for x in range(1, 6)]
+print(f"Squares: {squares}")`,
 
     java: `// Java Example
 public class Main {
@@ -75,6 +80,7 @@ public class Main {
       setCode(examples[language]);
     }
     setOutput([]);
+    setExecutionTime(null);
   }, [language]);
 
   useEffect(() => {
@@ -90,34 +96,43 @@ public class Main {
   }, [waitingForInput]);
 
   const loadPyodide = async () => {
-    if (pyodideRef.current) return;
+    if (pyodideRef.current || loadingPyodide) return;
     
     setLoadingPyodide(true);
-    addOutput('>>> Loading Python 3.11 runtime...', 'info');
+    addOutput('Loading Python 3.11 runtime...', 'info');
     
     try {
-      // Load Pyodide from CDN
-      const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js';
-      script.async = true;
-      
-      await new Promise((resolve, reject) => {
-        script.onload = resolve;
-        script.onerror = reject;
-        document.head.appendChild(script);
-      });
+      // Check if loadPyodide is already available
+      // @ts-ignore
+      if (!window.loadPyodide) {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js';
+        script.async = true;
+        
+        await new Promise((resolve, reject) => {
+          script.onload = resolve;
+          script.onerror = reject;
+          document.head.appendChild(script);
+        });
+      }
 
       // @ts-ignore
-      const pyodide = await loadPyodide({
+      const pyodide = await window.loadPyodide({
         indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.24.1/full/'
       });
 
       pyodideRef.current = pyodide;
 
-      // Setup stdout/stderr capture
+      // Setup stdout with buffering for better performance
       pyodide.setStdout({
         batched: (text: string) => {
-          addOutput(text, 'success');
+          outputBufferRef.current.push(text);
+          // Flush buffer periodically
+          if (outputBufferRef.current.length > 0) {
+            const combined = outputBufferRef.current.join('');
+            outputBufferRef.current = [];
+            addOutput(combined, 'success');
+          }
         }
       });
 
@@ -127,8 +142,8 @@ public class Main {
         }
       });
 
-      // Setup custom input function
-      pyodide.globals.set('custom_input', (prompt: string = '') => {
+      // Setup custom input function with proper async handling
+      pyodide.globals.set('js_input', (prompt: string = '') => {
         return new Promise((resolve) => {
           setInputPrompt(prompt);
           setWaitingForInput(true);
@@ -136,25 +151,33 @@ public class Main {
         });
       });
 
-      // Override built-in input
+      // Override built-in input with proper implementation
       await pyodide.runPythonAsync(`
+import sys
+from js import js_input
+
+class InputWrapper:
+    async def __call__(self, prompt=''):
+        if prompt:
+            sys.stdout.write(str(prompt))
+            sys.stdout.flush()
+        result = await js_input(prompt)
+        return str(result)
+
+_input = InputWrapper()
+
 import builtins
-import asyncio
-
-async def async_input(prompt=''):
-    result = await custom_input(prompt)
-    return result
-
-builtins.input = lambda prompt='': asyncio.ensure_future(async_input(prompt)).result()
+builtins.input = lambda prompt='': __import__('asyncio').run(_input(prompt))
       `);
 
       setPyodideReady(true);
-      addOutput('>>> Python 3.11.3 ready!', 'info');
-      addOutput('>>> Full standard library available', 'info');
+      addOutput('Python 3.11.3 ready!', 'success');
       addOutput('', 'output');
     } catch (error) {
-      addOutput(`Error loading Python: ${(error as Error).message}`, 'error');
-      addOutput('>>> Please refresh the page to try again', 'error');
+      addOutput(`Failed to load Python: ${(error as Error).message}`, 'error');
+      addOutput('Please refresh the page and try again.', 'error');
+      setPyodideReady(false);
+      pyodideRef.current = null;
     } finally {
       setLoadingPyodide(false);
     }
@@ -166,42 +189,123 @@ builtins.input = lambda prompt='': asyncio.ensure_future(async_input(prompt)).re
 
   const clearOutput = () => {
     setOutput([]);
+    setExecutionTime(null);
+    outputBufferRef.current = [];
   };
 
   const handleInputSubmit = () => {
     if (inputResolverRef.current && userInput !== null) {
-      addOutput(inputPrompt + userInput, 'input');
+      const promptText = inputPrompt || '';
+      addOutput(promptText + userInput, 'input');
       inputResolverRef.current(userInput);
       inputResolverRef.current = null;
       setWaitingForInput(false);
       setUserInput('');
+      setInputPrompt('');
+    }
+  };
+
+  const stopExecution = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    
+    if (inputResolverRef.current) {
+      inputResolverRef.current('');
+      inputResolverRef.current = null;
+    }
+    
+    setIsRunning(false);
+    setWaitingForInput(false);
+    setUserInput('');
+    setInputPrompt('');
+    
+    // Flush any remaining output
+    if (outputBufferRef.current.length > 0) {
+      const combined = outputBufferRef.current.join('');
+      outputBufferRef.current = [];
+      addOutput(combined, 'success');
+    }
+    
+    addOutput('', 'output');
+    addOutput('⚠ Execution stopped by user', 'warning');
+    
+    if (executionStartTimeRef.current > 0) {
+      const elapsed = ((Date.now() - executionStartTimeRef.current) / 1000).toFixed(2);
+      setExecutionTime(parseFloat(elapsed));
     }
   };
 
   const runPython = async (code: string) => {
-    if (!pyodideRef.current) {
+    if (!pyodideReady && !pyodideRef.current) {
       await loadPyodide();
     }
 
     if (!pyodideRef.current) {
-      addOutput('Error: Python runtime not available', 'error');
+      addOutput('Python runtime not available. Please try again.', 'error');
       return;
     }
 
-    addOutput('>>> Running Python code...', 'info');
-    addOutput('', 'output');
+    outputBufferRef.current = [];
+    abortControllerRef.current = new AbortController();
+    executionStartTimeRef.current = Date.now();
 
     try {
-      // Run the code
-      await pyodideRef.current.runPythonAsync(code);
-      addOutput('', 'output');
-      addOutput('>>> Execution completed', 'info');
-    } catch (error: any) {
-      // Python errors are already captured by stderr
-      if (error.message && !error.message.includes('KeyboardInterrupt')) {
+      // Check for potential infinite loops (basic detection)
+      const hasWhileTrue = /while\s+True\s*:/i.test(code) || /while\s+1\s*:/i.test(code);
+      if (hasWhileTrue && !/break/.test(code)) {
+        addOutput('⚠ Warning: Detected potential infinite loop (while True without break)', 'warning');
+        addOutput('Use the Stop button if execution hangs.', 'warning');
         addOutput('', 'output');
-        addOutput('>>> Execution failed', 'error');
       }
+
+      // Run the code with interrupt support
+      const result = await Promise.race([
+        pyodideRef.current.runPythonAsync(code),
+        new Promise((_, reject) => {
+          abortControllerRef.current?.signal.addEventListener('abort', () => {
+            reject(new Error('Execution stopped'));
+          });
+        })
+      ]);
+
+      // Flush any remaining output
+      if (outputBufferRef.current.length > 0) {
+        const combined = outputBufferRef.current.join('');
+        outputBufferRef.current = [];
+        addOutput(combined, 'success');
+      }
+
+      const elapsed = ((Date.now() - executionStartTimeRef.current) / 1000).toFixed(2);
+      setExecutionTime(parseFloat(elapsed));
+      
+      addOutput('', 'output');
+      addOutput(`✓ Execution completed successfully (${elapsed}s)`, 'info');
+      
+    } catch (error: any) {
+      // Flush any remaining output before showing error
+      if (outputBufferRef.current.length > 0) {
+        const combined = outputBufferRef.current.join('');
+        outputBufferRef.current = [];
+        addOutput(combined, 'success');
+      }
+
+      if (error.message === 'Execution stopped') {
+        // Already handled in stopExecution
+        return;
+      }
+
+      const elapsed = ((Date.now() - executionStartTimeRef.current) / 1000).toFixed(2);
+      setExecutionTime(parseFloat(elapsed));
+      
+      if (!error.message?.includes('KeyboardInterrupt')) {
+        addOutput('', 'output');
+        addOutput(`✗ Execution failed (${elapsed}s)`, 'error');
+      }
+    } finally {
+      abortControllerRef.current = null;
+      executionStartTimeRef.current = 0;
     }
   };
 
@@ -209,6 +313,8 @@ builtins.input = lambda prompt='': asyncio.ensure_future(async_input(prompt)).re
     addOutput('>>> Compiling Java...', 'info');
     addOutput('>>> Running Main class...', 'info');
     addOutput('', 'output');
+
+    const startTime = Date.now();
 
     try {
       const lines = code.split('\n');
@@ -231,14 +337,21 @@ builtins.input = lambda prompt='': asyncio.ensure_future(async_input(prompt)).re
         }
       }
       
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+      setExecutionTime(parseFloat(elapsed));
+      
       addOutput('', 'output');
-      addOutput('>>> BUILD SUCCESSFUL', 'info');
+      addOutput(`>>> BUILD SUCCESSFUL (${elapsed}s)`, 'info');
     } catch (error) {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+      setExecutionTime(parseFloat(elapsed));
       addOutput('Error: ' + (error as Error).message, 'error');
     }
   };
 
   const runHTML = (code: string) => {
+    const startTime = Date.now();
+    
     if (outputRef.current) {
       const iframe = document.createElement('iframe');
       iframe.style.cssText = 'width:100%;height:100%;border:none;background:white;border-radius:8px;';
@@ -252,6 +365,9 @@ builtins.input = lambda prompt='': asyncio.ensure_future(async_input(prompt)).re
         doc.write(code);
         doc.close();
       }
+      
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+      setExecutionTime(parseFloat(elapsed));
     }
   };
 
@@ -259,14 +375,17 @@ builtins.input = lambda prompt='': asyncio.ensure_future(async_input(prompt)).re
     setIsRunning(true);
     clearOutput();
     
-    if (language === 'python') {
-      await runPython(code);
-    } else if (language === 'java') {
-      runJava(code);
-    } else if (language === 'html') {
-      runHTML(code);
+    try {
+      if (language === 'python') {
+        await runPython(code);
+      } else if (language === 'java') {
+        runJava(code);
+      } else if (language === 'html') {
+        runHTML(code);
+      }
+    } finally {
+      setIsRunning(false);
     }
-    setIsRunning(false);
   };
 
   const highlightCode = (code: string, lang: string) => {
@@ -401,29 +520,35 @@ builtins.input = lambda prompt='': asyncio.ensure_future(async_input(prompt)).re
   };
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <div className="bg-card border-b border-border px-6 py-3 flex justify-between items-center">
+    <div className="min-h-screen bg-[#1e1e1e] text-[#d4d4d4]">
+      <div className="bg-[#252526] border-b border-[#3e3e42] px-6 py-3 flex justify-between items-center">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-gradient-to-br from-primary to-accent rounded-xl flex items-center justify-center shadow-glow">
-            <Code2 className="w-5 h-5 text-primary-foreground" />
+          <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg">
+            <Code2 className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h1 className="text-lg font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+            <h1 className="text-lg font-bold text-white">
               Code Compiler
             </h1>
-            <p className="text-xs text-muted-foreground">
-              {language === 'python' ? 'Python 3.11.3 Runtime' : 'Professional IDE Environment'}
+            <p className="text-xs text-[#858585]">
+              {language === 'python' ? 'Python 3.11.3 • Full Standard Library' : 'Professional IDE Environment'}
             </p>
           </div>
         </div>
         
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-secondary px-3 py-2 rounded-lg border border-border">
+          {executionTime !== null && (
+            <div className="text-xs text-[#858585] px-3 py-1 bg-[#1e1e1e] rounded border border-[#3e3e42]">
+              {executionTime}s
+            </div>
+          )}
+          
+          <div className="flex items-center gap-2 bg-[#1e1e1e] px-3 py-2 rounded-lg border border-[#3e3e42]">
             {getLanguageIcon()}
             <select
               value={language}
               onChange={(e) => setLanguage(e.target.value)}
-              className="bg-transparent text-foreground focus:outline-none cursor-pointer font-medium"
+              className="bg-transparent text-[#d4d4d4] focus:outline-none cursor-pointer font-medium"
             >
               <option value="python">Python</option>
               <option value="java">Java</option>
@@ -431,27 +556,37 @@ builtins.input = lambda prompt='': asyncio.ensure_future(async_input(prompt)).re
             </select>
           </div>
           
-          <button
-            onClick={handleRun}
-            disabled={isRunning || loadingPyodide}
-            className="bg-primary hover:bg-primary/90 text-primary-foreground px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg hover:shadow-glow transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isRunning || loadingPyodide ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                {loadingPyodide ? 'Loading...' : 'Running...'}
-              </>
-            ) : (
-              <>
-                <Play className="w-4 h-4" />
-                Run Code
-              </>
-            )}
-          </button>
+          {isRunning ? (
+            <button
+              onClick={stopExecution}
+              className="bg-red-600 hover:bg-red-700 text-white px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg transition-all"
+            >
+              <Square className="w-4 h-4" />
+              Stop
+            </button>
+          ) : (
+            <button
+              onClick={handleRun}
+              disabled={loadingPyodide}
+              className="bg-green-600 hover:bg-green-700 text-white px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loadingPyodide ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Loading...
+                </>
+              ) : (
+                <>
+                  <Play className="w-4 h-4" />
+                  Run
+                </>
+              )}
+            </button>
+          )}
           
           <button
             onClick={clearOutput}
-            className="bg-destructive hover:bg-destructive/90 text-destructive-foreground px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg transition-all"
+            className="bg-[#3e3e42] hover:bg-[#4e4e52] text-white px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg transition-all"
           >
             <Trash2 className="w-4 h-4" />
             Clear
@@ -460,10 +595,10 @@ builtins.input = lambda prompt='': asyncio.ensure_future(async_input(prompt)).re
       </div>
 
       <div className="flex h-[calc(100vh-73px)]">
-        <div className="flex-1 flex flex-col bg-background">
-          <div className="bg-card px-4 py-2 border-b border-border text-sm text-muted-foreground flex items-center gap-2">
-            <Zap className="w-4 h-4 text-primary" />
-            <span className="font-medium">Code Editor</span>
+        <div className="flex-1 flex flex-col bg-[#1e1e1e]">
+          <div className="bg-[#252526] px-4 py-2 border-b border-[#3e3e42] text-sm text-[#858585] flex items-center gap-2">
+            <Zap className="w-4 h-4 text-blue-400" />
+            <span className="font-medium">main.{language === 'python' ? 'py' : language === 'java' ? 'java' : 'html'}</span>
           </div>
           <div className="flex-1 relative overflow-hidden">
             <textarea
@@ -471,7 +606,7 @@ builtins.input = lambda prompt='': asyncio.ensure_future(async_input(prompt)).re
               value={code}
               onChange={(e) => setCode(e.target.value)}
               onKeyDown={handleKeyDown}
-              className="absolute inset-0 w-full h-full p-6 bg-transparent text-transparent caret-primary font-mono text-sm resize-none focus:outline-none z-10"
+              className="absolute inset-0 w-full h-full p-6 bg-transparent text-transparent caret-white font-mono text-sm resize-none focus:outline-none z-10"
               spellCheck="false"
               style={{ 
                 lineHeight: '1.6',
@@ -486,33 +621,33 @@ builtins.input = lambda prompt='': asyncio.ensure_future(async_input(prompt)).re
           </div>
         </div>
 
-        <div className="w-[45%] flex flex-col bg-console border-l border-border">
-          <div className="bg-card px-4 py-2 border-b border-border text-sm text-muted-foreground flex items-center gap-2">
-            <Terminal className="w-4 h-4 text-accent" />
-            <span className="font-medium">Output Console</span>
+        <div className="w-[45%] flex flex-col bg-[#1e1e1e] border-l border-[#3e3e42]">
+          <div className="bg-[#252526] px-4 py-2 border-b border-[#3e3e42] text-sm text-[#858585] flex items-center gap-2">
+            <Terminal className="w-4 h-4 text-green-400" />
+            <span className="font-medium">Output</span>
           </div>
           <div
             ref={outputRef}
-            className="flex-1 p-6 overflow-auto font-mono text-sm bg-[hsl(var(--console-bg))] flex flex-col"
+            className="flex-1 p-6 overflow-auto font-mono text-sm bg-[#0c0c0c] flex flex-col"
           >
             <div className="flex-1">
               {output.length === 0 && language !== 'html' && !waitingForInput && (
-                <div className="text-muted-foreground italic">
+                <div className="text-[#6e6e6e] italic">
                   {language === 'python' 
-                    ? 'Python 3.11 Console - Click "Run Code" to execute'
-                    : 'Click "Run Code" to see output here...'}
+                    ? '>>> Python 3.11 Console Ready'
+                    : '>>> Click Run to execute your code'}
                 </div>
               )}
               {output.map((line, idx) => (
                 <div
                   key={idx}
-                  className={`mb-1 ${
-                    line.type === 'info' ? 'text-primary font-semibold' :
+                  className={`mb-1 whitespace-pre-wrap ${
+                    line.type === 'info' ? 'text-blue-400' :
                     line.type === 'success' ? 'text-green-400' :
-                    line.type === 'error' ? 'text-destructive font-semibold' :
+                    line.type === 'error' ? 'text-red-400' :
                     line.type === 'warning' ? 'text-yellow-400' :
-                    line.type === 'input' ? 'text-blue-400' :
-                    'text-foreground'
+                    line.type === 'input' ? 'text-cyan-400' :
+                    'text-[#d4d4d4]'
                   }`}
                 >
                   {line.text || '\u00A0'}
@@ -521,22 +656,22 @@ builtins.input = lambda prompt='': asyncio.ensure_future(async_input(prompt)).re
             </div>
             
             {waitingForInput && (
-              <div className="mt-4 border-t border-border pt-4">
-                <div className="text-yellow-400 mb-2">{inputPrompt}</div>
-                <div className="flex gap-2">
+              <div className="mt-4 border-t border-[#3e3e42] pt-4">
+                <div className="flex gap-2 items-center">
+                  <span className="text-cyan-400">→</span>
                   <input
                     ref={inputRef}
                     type="text"
                     value={userInput}
                     onChange={(e) => setUserInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleInputSubmit()}
-                    className="flex-1 bg-background border border-border rounded px-3 py-2 text-foreground focus:outline-none focus:border-primary"
-                    placeholder="Type your input..."
+                    className="flex-1 bg-[#1e1e1e] border border-[#3e3e42] rounded px-3 py-2 text-[#d4d4d4] focus:outline-none focus:border-blue-500"
+                    placeholder="Enter input..."
                     autoFocus
                   />
                   <button
                     onClick={handleInputSubmit}
-                    className="bg-primary hover:bg-primary/90 text-primary-foreground px-4 py-2 rounded font-medium"
+                    className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded font-medium"
                   >
                     Submit
                   </button>
@@ -548,20 +683,12 @@ builtins.input = lambda prompt='': asyncio.ensure_future(async_input(prompt)).re
       </div>
 
       <style>{`
-        .keyword { color: hsl(330, 85%, 70%); font-weight: 600; }
-        .string { color: hsl(135, 94%, 65%); }
-        .number { color: hsl(271, 91%, 75%); }
-        .comment { color: hsl(220, 15%, 55%); font-style: italic; }
-        .function { color: hsl(190, 95%, 65%); }
-        .builtin { color: hsl(50, 100%, 65%); }
-        
-        .bg-console {
-          background: hsl(var(--console-bg));
-        }
-        
-        .shadow-glow {
-          box-shadow: var(--shadow-glow);
-        }
+        .keyword { color: #c586c0; font-weight: 600; }
+        .string { color: #ce9178; }
+        .number { color: #b5cea8; }
+        .comment { color: #6a9955; font-style: italic; }
+        .function { color: #dcdcaa; }
+        .builtin { color: #4ec9b0; }
       `}</style>
     </div>
   );
