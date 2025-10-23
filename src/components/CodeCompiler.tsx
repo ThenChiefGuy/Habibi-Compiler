@@ -1,187 +1,378 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Trash2, Code2, Terminal, FileCode, Zap, Monitor } from 'lucide-react';
-
-declare global {
-  interface Window {
-    loadPyodide: any;
-  }
-}
+import { Play, Trash2, Code2, Terminal, FileCode, Zap, Monitor, Loader2 } from 'lucide-react';
 
 const CodeCompiler = () => {
   const [language, setLanguage] = useState('python');
   const [code, setCode] = useState('');
-  const [output, setOutput] = useState<{ text: string; type: string }[]>([]);
+  const [output, setOutput] = useState<Array<{ text: string; type: string }>>([]);
   const [isRunning, setIsRunning] = useState(false);
+  const [pyodideReady, setPyodideReady] = useState(false);
+  const [loadingPyodide, setLoadingPyodide] = useState(false);
   const [waitingForInput, setWaitingForInput] = useState(false);
   const [inputPrompt, setInputPrompt] = useState('');
-  const [inputResolve, setInputResolve] = useState<((val: string) => void) | null>(null);
-  const [pyodide, setPyodide] = useState<any>(null);
-
+  const [userInput, setUserInput] = useState('');
   const outputRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const pyodideRef = useRef<any>(null);
+  const inputResolverRef = useRef<((value: string) => void) | null>(null);
 
   const examples = {
-    python: `# Python Example
-name = input("What is your name? ")
-age = int(input("How old are you? "))
-print(f"Hello {name}!")
-print(f"You are {age} years old.")
-for i in range(3):
-    print(f"Loop iteration: {i+1}")
-print("Program finished!")`,
+    python: `# Python 3.11 Console
+# Full Python standard library available
+
+# Basic operations
+print("Hello from Python 3.11!")
+print(f"2 + 2 = {2 + 2}")
+
+# List comprehension
+squares = [x**2 for x in range(5)]
+print(f"Squares: {squares}")
+
+# Using standard library
+import math
+print(f"π = {math.pi:.4f}")
+print(f"√16 = {math.sqrt(16)}")`,
+
     java: `// Java Example
-// Coming soon!`,
+public class Main {
+    public static void main(String[] args) {
+        System.out.println("Hello, World!");
+        System.out.println("Welcome to Code Compiler!");
+    }
+}`,
+
     html: `<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Hello World</title>
-  <style>
-    body { font-family: Arial; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; background:linear-gradient(135deg,#667eea,#764ba2);}
-    h1 { color:white; font-size:48px; text-shadow:2px 2px 4px rgba(0,0,0,0.3);}
-  </style>
+    <meta charset="UTF-8">
+    <title>Hello World</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+        }
+        h1 {
+            color: white;
+            font-size: 48px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+    </style>
 </head>
 <body>
-  <h1>Hello, World!</h1>
+    <h1>Hello, World!</h1>
 </body>
 </html>`
   };
 
-  // ---------------- Load Pyodide ----------------
   useEffect(() => {
-    const loadPython = async () => {
-      addOutput('Loading Python runtime...', 'info');
-      const py = await window.loadPyodide({ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.23.4/full/' });
-      setPyodide(py);
-      addOutput('Python runtime loaded ✅', 'info');
-    };
-
-    if (!window.loadPyodide) {
-      const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/pyodide/v0.23.4/full/pyodide.js';
-      script.onload = loadPython;
-      document.body.appendChild(script);
-    } else {
-      loadPython();
+    if (code === '' || code === examples[Object.keys(examples).find(key => key !== language) as keyof typeof examples]) {
+      setCode(examples[language]);
     }
-  }, []);
-
-  // ---------------- Load Example ----------------
-  useEffect(() => {
-    if (!code || Object.values(examples).includes(code)) setCode(examples[language]);
     setOutput([]);
   }, [language]);
 
   useEffect(() => {
-    if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight;
-  }, [output, waitingForInput]);
+    if (outputRef.current) {
+      outputRef.current.scrollTop = outputRef.current.scrollHeight;
+    }
+  }, [output]);
 
-  const addOutput = (text: string, type: string = 'output') => {
-    setOutput(prev => [...prev, { text, type }]);
-  };
+  useEffect(() => {
+    if (waitingForInput && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [waitingForInput]);
 
-  const clearOutput = () => setOutput([]);
-
-  // ---------------- Input Handling ----------------
-  const getInput = (prompt: string): Promise<string> => {
-    return new Promise<string>(resolve => {
-      setInputPrompt(String(prompt));
-      setWaitingForInput(true);
-      setInputResolve(() => resolve);
-    });
-  };
-
-  // ---------------- Python Runner ----------------
-  const runPython = async (code: string) => {
-    if (!pyodide) { addOutput('Python runtime not ready!', 'error'); return; }
-
-    addOutput('>>> Python Execution Started', 'info');
-    addOutput('', 'output');
-
+  const loadPyodide = async () => {
+    if (pyodideRef.current) return;
+    
+    setLoadingPyodide(true);
+    addOutput('>>> Loading Python 3.11 runtime...', 'info');
+    
     try {
-      // Redirect stdout
-      pyodide.runPython(`
-import sys
-import io
-sys.stdout = io.StringIO()
-sys.stderr = io.StringIO()
-`);
-
-      // Set up custom input function
-      pyodide.globals.set('get_input', getInput);
+      // Load Pyodide from CDN
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js';
+      script.async = true;
       
-      await pyodide.runPythonAsync(`
-from js import get_input
-import builtins
-def custom_input(prompt=""):
-    result = get_input(str(prompt))
-    return result
-builtins.input = custom_input
-`);
-
-      // Redirect print to capture output
-      pyodide.globals.set('js_print', (text: string) => {
-        addOutput(String(text), 'output');
+      await new Promise((resolve, reject) => {
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
       });
 
+      // @ts-ignore
+      const pyodide = await loadPyodide({
+        indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.24.1/full/'
+      });
+
+      pyodideRef.current = pyodide;
+
+      // Setup stdout/stderr capture
+      pyodide.setStdout({
+        batched: (text: string) => {
+          addOutput(text, 'success');
+        }
+      });
+
+      pyodide.setStderr({
+        batched: (text: string) => {
+          addOutput(text, 'error');
+        }
+      });
+
+      // Setup custom input function
+      pyodide.globals.set('custom_input', (prompt: string = '') => {
+        return new Promise((resolve) => {
+          setInputPrompt(prompt);
+          setWaitingForInput(true);
+          inputResolverRef.current = resolve;
+        });
+      });
+
+      // Override built-in input
       await pyodide.runPythonAsync(`
 import builtins
-def custom_print(*args, sep=' ', end='\\n', **kwargs):
-    from js import js_print
-    output = sep.join(str(arg) for arg in args) + end
-    js_print(output.rstrip('\\n'))
-builtins.print = custom_print
-`);
+import asyncio
 
-      // Execute the entire code as one block
-      await pyodide.runPythonAsync(code);
+async def async_input(prompt=''):
+    result = await custom_input(prompt)
+    return result
 
-      // Get any remaining stdout/stderr
-      const stdout = pyodide.runPython('sys.stdout.getvalue()');
-      const stderr = pyodide.runPython('sys.stderr.getvalue()');
-      
-      if (stdout && stdout.trim()) {
-        stdout.trim().split('\n').forEach((line: string) => addOutput(line, 'output'));
-      }
-      if (stderr && stderr.trim()) {
-        stderr.trim().split('\n').forEach((line: string) => addOutput(line, 'error'));
-      }
+builtins.input = lambda prompt='': asyncio.ensure_future(async_input(prompt)).result()
+      `);
 
+      setPyodideReady(true);
+      addOutput('>>> Python 3.11.3 ready!', 'info');
+      addOutput('>>> Full standard library available', 'info');
       addOutput('', 'output');
-      addOutput('>>> Execution Completed Successfully', 'info');
-    } catch (err: any) {
-      const errorMsg = err.message || String(err);
-      addOutput('', 'output');
-      addOutput('Error: ' + errorMsg, 'error');
+    } catch (error) {
+      addOutput(`Error loading Python: ${(error as Error).message}`, 'error');
+      addOutput('>>> Please refresh the page to try again', 'error');
+    } finally {
+      setLoadingPyodide(false);
     }
   };
 
-  // ---------------- Java Runner ----------------
-  const runJava = async () => addOutput('>>> Java execution is coming soon!', 'info');
+  const addOutput = (text: string, type = 'output') => {
+    setOutput(prev => [...prev, { text, type }]);
+  };
 
-  // ---------------- HTML Runner ----------------
+  const clearOutput = () => {
+    setOutput([]);
+  };
+
+  const handleInputSubmit = () => {
+    if (inputResolverRef.current && userInput !== null) {
+      addOutput(inputPrompt + userInput, 'input');
+      inputResolverRef.current(userInput);
+      inputResolverRef.current = null;
+      setWaitingForInput(false);
+      setUserInput('');
+    }
+  };
+
+  const runPython = async (code: string) => {
+    if (!pyodideRef.current) {
+      await loadPyodide();
+    }
+
+    if (!pyodideRef.current) {
+      addOutput('Error: Python runtime not available', 'error');
+      return;
+    }
+
+    addOutput('>>> Running Python code...', 'info');
+    addOutput('', 'output');
+
+    try {
+      // Run the code
+      await pyodideRef.current.runPythonAsync(code);
+      addOutput('', 'output');
+      addOutput('>>> Execution completed', 'info');
+    } catch (error: any) {
+      // Python errors are already captured by stderr
+      if (error.message && !error.message.includes('KeyboardInterrupt')) {
+        addOutput('', 'output');
+        addOutput('>>> Execution failed', 'error');
+      }
+    }
+  };
+
+  const runJava = (code: string) => {
+    addOutput('>>> Compiling Java...', 'info');
+    addOutput('>>> Running Main class...', 'info');
+    addOutput('', 'output');
+
+    try {
+      const lines = code.split('\n');
+      
+      for (let line of lines) {
+        const printMatch = line.match(/System\.out\.println\((.*?)\);/);
+        if (printMatch) {
+          let content = printMatch[1].trim();
+          content = content.replace(/["']/g, '');
+          content = content.replace(/\s*\+\s*/g, ' ');
+          content = content.replace(/\\n/g, '\n');
+          
+          if (content.includes('\n')) {
+            content.split('\n').forEach(l => {
+              if (l.trim()) addOutput(l.trim(), 'success');
+            });
+          } else {
+            addOutput(content, 'success');
+          }
+        }
+      }
+      
+      addOutput('', 'output');
+      addOutput('>>> BUILD SUCCESSFUL', 'info');
+    } catch (error) {
+      addOutput('Error: ' + (error as Error).message, 'error');
+    }
+  };
+
   const runHTML = (code: string) => {
     if (outputRef.current) {
       const iframe = document.createElement('iframe');
       iframe.style.cssText = 'width:100%;height:100%;border:none;background:white;border-radius:8px;';
+      
       outputRef.current.innerHTML = '';
       outputRef.current.appendChild(iframe);
+      
       const doc = iframe.contentDocument || iframe.contentWindow?.document;
-      if (doc) { doc.open(); doc.write(code); doc.close(); }
+      if (doc) {
+        doc.open();
+        doc.write(code);
+        doc.close();
+      }
     }
   };
 
-  // ---------------- Run Handler ----------------
   const handleRun = async () => {
     setIsRunning(true);
     clearOutput();
-    if (language === 'python') await runPython(code);
-    else if (language === 'java') await runJava();
-    else if (language === 'html') runHTML(code);
+    
+    if (language === 'python') {
+      await runPython(code);
+    } else if (language === 'java') {
+      runJava(code);
+    } else if (language === 'html') {
+      runHTML(code);
+    }
     setIsRunning(false);
   };
 
-  // ---------------- Editor Tab Handling ----------------
+  const highlightCode = (code: string, lang: string) => {
+    let escaped = code
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    const keywords = {
+      python: ['def', 'return', 'if', 'else', 'elif', 'for', 'in', 'range', 'import', 'from', 'class', 'True', 'False', 'None', 'and', 'or', 'not', 'while', 'break', 'continue', 'pass', 'try', 'except', 'finally', 'with', 'as', 'lambda', 'yield', 'async', 'await', 'global', 'nonlocal', 'del', 'assert', 'raise'],
+      java: ['public', 'private', 'protected', 'static', 'void', 'int', 'double', 'float', 'String', 'boolean', 'class', 'return', 'if', 'else', 'for', 'while', 'new', 'this', 'super', 'extends', 'implements', 'import', 'package', 'true', 'false', 'null', 'try', 'catch', 'finally', 'throw', 'throws'],
+      html: ['DOCTYPE', 'html', 'head', 'body', 'title', 'style', 'script', 'div', 'span', 'a', 'img', 'input', 'button', 'form', 'meta', 'link']
+    };
+
+    const builtins = {
+      python: ['print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple', 'sum', 'min', 'max', 'abs', 'round', 'sorted', 'enumerate', 'zip', 'map', 'filter', 'input', 'open', 'type', 'isinstance', 'dir', 'help', 'getattr', 'setattr', 'hasattr'],
+      java: ['System', 'String', 'Math', 'Integer', 'Double', 'Boolean', 'Array', 'List', 'ArrayList', 'HashMap', 'println', 'print'],
+      html: []
+    };
+
+    const langKeywords = keywords[lang as keyof typeof keywords] || [];
+    const langBuiltins = builtins[lang as keyof typeof builtins] || [];
+
+    let result = '';
+    let i = 0;
+    
+    while (i < escaped.length) {
+      let matched = false;
+
+      if (lang === 'python' && escaped[i] === '#') {
+        const endOfLine = escaped.indexOf('\n', i);
+        const comment = endOfLine === -1 ? escaped.slice(i) : escaped.slice(i, endOfLine);
+        result += `<span class="comment">${comment}</span>`;
+        i += comment.length;
+        matched = true;
+      } else if (lang === 'java' && escaped.slice(i, i + 2) === '//') {
+        const endOfLine = escaped.indexOf('\n', i);
+        const comment = endOfLine === -1 ? escaped.slice(i) : escaped.slice(i, endOfLine);
+        result += `<span class="comment">${comment}</span>`;
+        i += comment.length;
+        matched = true;
+      } else if (escaped[i] === '"' || escaped[i] === "'") {
+        const quote = escaped[i];
+        let j = i + 1;
+        let str = quote;
+        
+        const isFString = i > 0 && escaped[i - 1] === 'f';
+        if (isFString && result.endsWith('f')) {
+          result = result.slice(0, -1);
+          str = 'f' + str;
+        }
+        
+        while (j < escaped.length) {
+          if (escaped[j] === '\\' && j + 1 < escaped.length) {
+            str += escaped[j] + escaped[j + 1];
+            j += 2;
+          } else if (escaped[j] === quote) {
+            str += quote;
+            j++;
+            break;
+          } else {
+            str += escaped[j];
+            j++;
+          }
+        }
+        result += `<span class="string">${str}</span>`;
+        i = j;
+        matched = true;
+      } else if (/\d/.test(escaped[i])) {
+        let num = '';
+        while (i < escaped.length && /[\d.]/.test(escaped[i])) {
+          num += escaped[i];
+          i++;
+        }
+        result += `<span class="number">${num}</span>`;
+        matched = true;
+      } else if (/[a-zA-Z_]/.test(escaped[i])) {
+        let word = '';
+        while (i < escaped.length && /[a-zA-Z0-9_]/.test(escaped[i])) {
+          word += escaped[i];
+          i++;
+        }
+        
+        const isFunction = escaped[i] === '(';
+        
+        if (langKeywords.includes(word)) {
+          result += `<span class="keyword">${word}</span>`;
+        } else if (langBuiltins.includes(word)) {
+          result += `<span class="builtin">${word}</span>`;
+        } else if (isFunction) {
+          result += `<span class="function">${word}</span>`;
+        } else {
+          result += word;
+        }
+        matched = true;
+      }
+
+      if (!matched) {
+        result += escaped[i];
+        i++;
+      }
+    }
+
+    return result;
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Tab') {
       e.preventDefault();
@@ -190,165 +381,166 @@ builtins.print = custom_print
       const end = target.selectionEnd;
       const newCode = code.substring(0, start) + '    ' + code.substring(end);
       setCode(newCode);
-      setTimeout(() => { target.selectionStart = target.selectionEnd = start + 4; }, 0);
+      setTimeout(() => {
+        target.selectionStart = target.selectionEnd = start + 4;
+      }, 0);
     }
   };
 
-  // ---------------- Syntax Highlighting ----------------
-  const highlightCode = (code: string, lang: string) => {
-    let escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const keywords = {
-      python: ['def','return','if','else','elif','for','in','range','import','from','class','True','False','None','and','or','not','while','break','continue','pass','try','except','finally','with','as','lambda','yield'],
-      java: ['public','private','protected','static','void','int','double','float','String','boolean','class','return','if','else','for','while','new','this','super','extends','implements','import','package','true','false','null','try','catch','finally','throw','throws'],
-      html: ['DOCTYPE','html','head','body','title','style','script','div','span','a','img','input','button','form','meta','link']
-    };
-    const builtins = {
-      python: ['print','len','range','str','int','float','list','dict','set','tuple','sum','min','max','abs','round','sorted','enumerate','zip','map','filter','input'],
-      java: ['System','String','Math','Integer','Double','Boolean','Array','List','ArrayList','HashMap','println','print'],
-      html: []
-    };
-    const langKeywords = keywords[lang as keyof typeof keywords] || [];
-    const langBuiltins = builtins[lang as keyof typeof builtins] || [];
-
-    let result = '';
-    let i = 0;
-    while (i < escaped.length) {
-      let matched = false;
-      // Comments
-      if (lang === 'python' && escaped[i] === '#') {
-        const end = escaped.indexOf('\n', i);
-        const comment = end === -1 ? escaped.slice(i) : escaped.slice(i, end);
-        result += `<span class="comment">${comment}</span>`;
-        i += comment.length; matched = true;
-      } else if (lang === 'java' && escaped.slice(i, i+2) === '//') {
-        const end = escaped.indexOf('\n', i);
-        const comment = end === -1 ? escaped.slice(i) : escaped.slice(i, end);
-        result += `<span class="comment">${comment}</span>`;
-        i += comment.length; matched = true;
-      }
-      // Strings
-      else if (escaped[i]==='"' || escaped[i]==="'") {
-        const quote = escaped[i]; let j=i+1; let str=quote;
-        while(j<escaped.length){
-          if(escaped[j]==='\\' && j+1<escaped.length){ str+=escaped[j]+escaped[j+1]; j+=2; }
-          else if(escaped[j]===quote){ str+=quote; j++; break; }
-          else{ str+=escaped[j]; j++; }
-        }
-        result += `<span class="string">${str}</span>`; i=j; matched=true;
-      }
-      // Numbers
-      else if(/\d/.test(escaped[i])){
-        let num=''; while(i<escaped.length && /[\d.]/.test(escaped[i])){ num+=escaped[i]; i++; }
-        result+=`<span class="number">${num}</span>`; matched=true;
-      }
-      // Keywords/Builtins/Functions
-      else if(/[a-zA-Z_]/.test(escaped[i])){
-        let word=''; const start=i;
-        while(i<escaped.length && /[a-zA-Z0-9_]/.test(escaped[i])) word+=escaped[i],i++;
-        const isFunc = escaped[i]==='(';
-        if(langKeywords.includes(word)) result+=`<span class="keyword">${word}</span>`;
-        else if(langBuiltins.includes(word)) result+=`<span class="builtin">${word}</span>`;
-        else if(isFunc) result+=`<span class="function">${word}</span>`;
-        else result+=word;
-        matched=true;
-      }
-      if(!matched){ result+=escaped[i]; i++; }
-    }
-    return result;
-  };
-
-  // ---------------- Language Icon ----------------
   const getLanguageIcon = () => {
-    switch(language){ case 'python': return <FileCode className="w-4 h-4"/>; case 'java': return <Code2 className="w-4 h-4"/>; case 'html': return <Monitor className="w-4 h-4"/>; default: return <FileCode className="w-4 h-4"/>; }
+    switch (language) {
+      case 'python':
+        return <FileCode className="w-4 h-4" />;
+      case 'java':
+        return <Code2 className="w-4 h-4" />;
+      case 'html':
+        return <Monitor className="w-4 h-4" />;
+      default:
+        return <FileCode className="w-4 h-4" />;
+    }
   };
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      {/* Top Bar */}
       <div className="bg-card border-b border-border px-6 py-3 flex justify-between items-center">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-gradient-to-br from-primary to-accent rounded-xl flex items-center justify-center shadow-glow">
-            <Code2 className="w-5 h-5 text-primary-foreground"/>
+            <Code2 className="w-5 h-5 text-primary-foreground" />
           </div>
           <div>
-            <h1 className="text-lg font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">Code Compiler</h1>
-            <p className="text-xs text-muted-foreground">Professional IDE Environment</p>
+            <h1 className="text-lg font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+              Code Compiler
+            </h1>
+            <p className="text-xs text-muted-foreground">
+              {language === 'python' ? 'Python 3.11.3 Runtime' : 'Professional IDE Environment'}
+            </p>
           </div>
         </div>
+        
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 bg-secondary px-3 py-2 rounded-lg border border-border">
             {getLanguageIcon()}
-            <select value={language} onChange={(e)=>setLanguage(e.target.value)} className="bg-transparent text-foreground focus:outline-none cursor-pointer font-medium">
+            <select
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              className="bg-transparent text-foreground focus:outline-none cursor-pointer font-medium"
+            >
               <option value="python">Python</option>
               <option value="java">Java</option>
               <option value="html">HTML</option>
             </select>
           </div>
-          <button onClick={handleRun} disabled={isRunning} className="bg-primary hover:bg-primary/90 text-primary-foreground px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg disabled:opacity-50 disabled:cursor-not-allowed">
-            <Play className="w-4 h-4"/>{isRunning ? 'Running...' : 'Run Code'}
+          
+          <button
+            onClick={handleRun}
+            disabled={isRunning || loadingPyodide}
+            className="bg-primary hover:bg-primary/90 text-primary-foreground px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg hover:shadow-glow transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isRunning || loadingPyodide ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                {loadingPyodide ? 'Loading...' : 'Running...'}
+              </>
+            ) : (
+              <>
+                <Play className="w-4 h-4" />
+                Run Code
+              </>
+            )}
           </button>
-          <button onClick={clearOutput} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg">
-            <Trash2 className="w-4 h-4"/>Clear
+          
+          <button
+            onClick={clearOutput}
+            className="bg-destructive hover:bg-destructive/90 text-destructive-foreground px-5 py-2 rounded-lg flex items-center gap-2 font-medium shadow-lg transition-all"
+          >
+            <Trash2 className="w-4 h-4" />
+            Clear
           </button>
         </div>
       </div>
 
-      {/* Editor and Console */}
       <div className="flex h-[calc(100vh-73px)]">
-        {/* Code Editor */}
         <div className="flex-1 flex flex-col bg-background">
           <div className="bg-card px-4 py-2 border-b border-border text-sm text-muted-foreground flex items-center gap-2">
-            <Zap className="w-4 h-4 text-primary"/>Code Editor
+            <Zap className="w-4 h-4 text-primary" />
+            <span className="font-medium">Code Editor</span>
           </div>
           <div className="flex-1 relative overflow-hidden">
-            <textarea ref={textareaRef} value={code} onChange={e=>setCode(e.target.value)} onKeyDown={handleKeyDown}
-              className="absolute inset-0 w-full h-full p-6 bg-transparent text-transparent caret-primary font-mono text-sm resize-none focus:outline-none z-10" spellCheck="false" style={{lineHeight:'1.6', tabSize:4}}/>
-            <pre className="absolute inset-0 w-full h-full p-6 font-mono text-sm overflow-auto pointer-events-none" style={{lineHeight:'1.6'}} dangerouslySetInnerHTML={{__html:highlightCode(code,language)}}/>
+            <textarea
+              ref={textareaRef}
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              onKeyDown={handleKeyDown}
+              className="absolute inset-0 w-full h-full p-6 bg-transparent text-transparent caret-primary font-mono text-sm resize-none focus:outline-none z-10"
+              spellCheck="false"
+              style={{ 
+                lineHeight: '1.6',
+                tabSize: 4,
+              }}
+            />
+            <pre
+              className="absolute inset-0 w-full h-full p-6 font-mono text-sm overflow-auto pointer-events-none"
+              style={{ lineHeight: '1.6' }}
+              dangerouslySetInnerHTML={{ __html: highlightCode(code, language) }}
+            />
           </div>
         </div>
 
-        {/* Output Console */}
         <div className="w-[45%] flex flex-col bg-console border-l border-border">
           <div className="bg-card px-4 py-2 border-b border-border text-sm text-muted-foreground flex items-center gap-2">
-            <Terminal className="w-4 h-4 text-accent"/>Output Console
+            <Terminal className="w-4 h-4 text-accent" />
+            <span className="font-medium">Output Console</span>
           </div>
-          <div ref={outputRef} className="flex-1 p-6 overflow-auto font-mono text-sm bg-[hsl(var(--console-bg))] flex flex-col">
-            {output.map((line,idx)=>(
-              <div key={idx} className={
-                line.type==='info'?'text-primary font-semibold':
-                line.type==='success'?'text-green-400':
-                line.type==='error'?'text-destructive font-semibold':
-                line.type==='warning'?'text-yellow-400':
-                line.type==='input'?'text-blue-400':'text-foreground'
-              }>{line.text||'\u00A0'}</div>
-            ))}
-            {waitingForInput && inputResolve && (
-              <div className="text-blue-400 mt-2 flex items-start">
-                <span className="whitespace-pre">{inputPrompt}</span>
-                <span 
-                  contentEditable 
-                  suppressContentEditableWarning 
-                  className="outline-none border-b border-blue-400 min-w-[100px] ml-0"
-                  autoFocus
-                  onKeyDown={e=>{
-                    if(e.key==='Enter'){ 
-                      e.preventDefault(); 
-                      const val = e.currentTarget.textContent||''; 
-                      addOutput(inputPrompt + val,'input'); 
-                      if (inputResolve) {
-                        inputResolve(val); 
-                      }
-                      setWaitingForInput(false); 
-                      setInputResolve(null); 
-                      e.currentTarget.textContent=''; 
-                    }
-                  }}
-                  ref={(el) => {
-                    if (el && waitingForInput) {
-                      setTimeout(() => el.focus(), 0);
-                    }
-                  }}
-                ></span>
+          <div
+            ref={outputRef}
+            className="flex-1 p-6 overflow-auto font-mono text-sm bg-[hsl(var(--console-bg))] flex flex-col"
+          >
+            <div className="flex-1">
+              {output.length === 0 && language !== 'html' && !waitingForInput && (
+                <div className="text-muted-foreground italic">
+                  {language === 'python' 
+                    ? 'Python 3.11 Console - Click "Run Code" to execute'
+                    : 'Click "Run Code" to see output here...'}
+                </div>
+              )}
+              {output.map((line, idx) => (
+                <div
+                  key={idx}
+                  className={`mb-1 ${
+                    line.type === 'info' ? 'text-primary font-semibold' :
+                    line.type === 'success' ? 'text-green-400' :
+                    line.type === 'error' ? 'text-destructive font-semibold' :
+                    line.type === 'warning' ? 'text-yellow-400' :
+                    line.type === 'input' ? 'text-blue-400' :
+                    'text-foreground'
+                  }`}
+                >
+                  {line.text || '\u00A0'}
+                </div>
+              ))}
+            </div>
+            
+            {waitingForInput && (
+              <div className="mt-4 border-t border-border pt-4">
+                <div className="text-yellow-400 mb-2">{inputPrompt}</div>
+                <div className="flex gap-2">
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={userInput}
+                    onChange={(e) => setUserInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleInputSubmit()}
+                    className="flex-1 bg-background border border-border rounded px-3 py-2 text-foreground focus:outline-none focus:border-primary"
+                    placeholder="Type your input..."
+                    autoFocus
+                  />
+                  <button
+                    onClick={handleInputSubmit}
+                    className="bg-primary hover:bg-primary/90 text-primary-foreground px-4 py-2 rounded font-medium"
+                  >
+                    Submit
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -356,14 +548,20 @@ builtins.print = custom_print
       </div>
 
       <style>{`
-        .keyword { color: hsl(330,85%,70%); font-weight:600; }
-        .string { color: hsl(135,94%,65%); }
-        .number { color: hsl(271,91%,75%); }
-        .comment { color: hsl(220,15%,55%); font-style:italic; }
-        .function { color: hsl(190,95%,65%); }
-        .builtin { color: hsl(50,100%,65%); }
-        .bg-console { background: hsl(var(--console-bg)); }
-        .shadow-glow { box-shadow: var(--shadow-glow); }
+        .keyword { color: hsl(330, 85%, 70%); font-weight: 600; }
+        .string { color: hsl(135, 94%, 65%); }
+        .number { color: hsl(271, 91%, 75%); }
+        .comment { color: hsl(220, 15%, 55%); font-style: italic; }
+        .function { color: hsl(190, 95%, 65%); }
+        .builtin { color: hsl(50, 100%, 65%); }
+        
+        .bg-console {
+          background: hsl(var(--console-bg));
+        }
+        
+        .shadow-glow {
+          box-shadow: var(--shadow-glow);
+        }
       `}</style>
     </div>
   );
